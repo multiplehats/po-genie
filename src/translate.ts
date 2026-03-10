@@ -4,10 +4,32 @@ import { z } from 'zod'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { extractVariables, restoreVariables } from './variables.js'
 import { loadPO, localeToLanguageName } from './po.js'
-import type { TranslateOptions, TranslateResult } from './types.js'
+import type { TranslateOptions, TranslateResult, TokenUsage } from './types.js'
 
 const DEFAULT_MODEL = 'anthropic/claude-3.5-haiku'
 const DEFAULT_BATCH_SIZE = 40
+
+/**
+ * Cost per million tokens (input / output) in USD for common OpenRouter models.
+ * https://openrouter.ai/models — update as prices change.
+ */
+const MODEL_PRICES: Record<string, { input: number; output: number }> = {
+  'anthropic/claude-3.5-haiku':           { input: 0.80,  output: 4.00  },
+  'anthropic/claude-3.5-haiku-20241022':  { input: 0.80,  output: 4.00  },
+  'anthropic/claude-3.5-sonnet':          { input: 3.00,  output: 15.00 },
+  'anthropic/claude-3-opus':              { input: 15.00, output: 75.00 },
+  'google/gemini-2.0-flash-001':          { input: 0.10,  output: 0.40  },
+  'google/gemini-flash-1.5':             { input: 0.075, output: 0.30  },
+  'openai/gpt-4o':                        { input: 2.50,  output: 10.00 },
+  'openai/gpt-4o-mini':                   { input: 0.15,  output: 0.60  },
+  'meta-llama/llama-3.3-70b-instruct':    { input: 0.12,  output: 0.30  },
+}
+
+function estimateCost(modelId: string, promptTokens: number, completionTokens: number): number | undefined {
+  const prices = MODEL_PRICES[modelId]
+  if (!prices) return undefined
+  return (promptTokens / 1_000_000) * prices.input + (completionTokens / 1_000_000) * prices.output
+}
 
 const translationsSchema = z.object({
   translations: z
@@ -16,9 +38,7 @@ const translationsSchema = z.object({
 })
 
 function buildSystemPrompt(targetLanguage: string, context?: string): string {
-  const contextLine = context
-    ? `\nProject context: ${context}`
-    : ''
+  const contextLine = context ? `\nProject context: ${context}` : ''
 
   return `You are a professional software localisation translator.
 Translate UI strings from English to ${targetLanguage}.${contextLine}
@@ -37,16 +57,13 @@ async function translateBatch(
   targetLanguage: string,
   model: ReturnType<ReturnType<typeof createOpenRouter>['chat']>,
   context?: string,
-): Promise<string[]> {
-  const { object } = await generateObject({
+): Promise<{ translations: string[]; promptTokens: number; completionTokens: number }> {
+  const { object, usage } = await generateObject({
     model,
     schema: translationsSchema,
     messages: [
       { role: 'system', content: buildSystemPrompt(targetLanguage, context) },
-      {
-        role: 'user',
-        content: JSON.stringify(strings),
-      },
+      { role: 'user', content: JSON.stringify(strings) },
     ],
   })
 
@@ -56,7 +73,11 @@ async function translateBatch(
     )
   }
 
-  return object.translations
+  return {
+    translations: object.translations,
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+  }
 }
 
 function resolveOutputPath(input: string, locale: string, output?: string): string {
@@ -111,9 +132,11 @@ export async function translateFile(
   const total = toTranslate.length
   const skipped = po.entries.length - total
 
+  const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+
   if (total === 0) {
     po.save(outputPath)
-    return { locale, output: outputPath, translated: 0, skipped }
+    return { locale, output: outputPath, translated: 0, skipped, usage: emptyUsage }
   }
 
   // Extract variables and build templates for each entry
@@ -128,16 +151,21 @@ export async function translateFile(
   }
 
   let translated = 0
+  let promptTokens = 0
+  let completionTokens = 0
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
     const indices = batches[batchIndex]
     const templates = indices.map((i) => extracted[i].template)
 
-    const results = await translateBatch(templates, targetLanguage, model, context)
+    const result = await translateBatch(templates, targetLanguage, model, context)
+
+    promptTokens += result.promptTokens
+    completionTokens += result.completionTokens
 
     for (let j = 0; j < indices.length; j++) {
       const entryIndex = indices[j]
-      const restored = restoreVariables(results[j], extracted[entryIndex].vars)
+      const restored = restoreVariables(result.translations[j], extracted[entryIndex].vars)
       toTranslate[entryIndex]._item.msgstr = [restored]
       translated++
     }
@@ -153,7 +181,16 @@ export async function translateFile(
 
   po.save(outputPath)
 
-  return { locale, output: outputPath, translated, skipped }
+  const totalTokens = promptTokens + completionTokens
+  const estimatedCostUsd = estimateCost(modelId, promptTokens, completionTokens)
+
+  return {
+    locale,
+    output: outputPath,
+    translated,
+    skipped,
+    usage: { promptTokens, completionTokens, totalTokens, estimatedCostUsd },
+  }
 }
 
 export async function translate(options: TranslateOptions): Promise<TranslateResult[]> {
