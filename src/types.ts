@@ -30,9 +30,18 @@ export interface Progress {
   batches: number
 }
 
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  /** Estimated cost in USD, present when the model is in the known price list */
+  estimatedCostUsd?: number
+}
+
 export interface TranslateResult {
   locale: string
   output: string
   translated: number
   skipped: number
+  usage: TokenUsage
 }

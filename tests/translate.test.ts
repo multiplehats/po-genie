@@ -74,7 +74,10 @@ function mockAI(responses: string[][]) {
   let call = 0
   vi.mocked(generateObject).mockImplementation(async () => {
     const translations = responses[call++] ?? []
-    return { object: { translations } } as any
+    return {
+      object: { translations },
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+    } as any
   })
 }
 

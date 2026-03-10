@@ -78,11 +78,35 @@ const main = defineCommand({
 
       console.log('\n')
 
+      let totalPrompt = 0
+      let totalCompletion = 0
+      let totalCost = 0
+      let costKnown = false
+
       for (const result of results) {
+        const { usage } = result
+        totalPrompt += usage.promptTokens
+        totalCompletion += usage.completionTokens
+        if (usage.estimatedCostUsd !== undefined) {
+          totalCost += usage.estimatedCostUsd
+          costKnown = true
+        }
+
+        const costStr = usage.estimatedCostUsd !== undefined
+          ? `  ~$${usage.estimatedCostUsd.toFixed(4)}`
+          : ''
+
         console.log(
           `✓ ${result.locale}  →  ${result.output}` +
-            `  (${result.translated} translated, ${result.skipped} skipped)`,
+            `  (${result.translated} translated, ${result.skipped} skipped)${costStr}`,
         )
+      }
+
+      if (results.length > 1 || costKnown) {
+        const tokensStr = `${(totalPrompt + totalCompletion).toLocaleString()} tokens` +
+          ` (${totalPrompt.toLocaleString()} in / ${totalCompletion.toLocaleString()} out)`
+        const costStr = costKnown ? `  ~$${totalCost.toFixed(4)} total` : ''
+        console.log(`\n  ${tokensStr}${costStr}`)
       }
     } catch (err) {
       console.error('\nError:', err instanceof Error ? err.message : err)
