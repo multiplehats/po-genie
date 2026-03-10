@@ -11,30 +11,53 @@ AI-powered `.po` / `.pot` file translator. Fills in missing translations using a
 - Multiple target locales in one command
 - Programmatic API + CLI
 
-## Install
+## Quick start
+
+**1. Get an API key** from [openrouter.ai/keys](https://openrouter.ai/keys) — free to sign up.
+
+**2. Run without installing:**
+
+```bash
+# Using npx
+OPENROUTER_API_KEY=sk-or-... npx po-genie -i languages/messages.pot -l nl_NL
+
+# Using pnpm
+OPENROUTER_API_KEY=sk-or-... pnpm dlx po-genie -i languages/messages.pot -l nl_NL
+```
+
+Or put your key in a `.env` file in your project root and it will be picked up automatically:
+
+```bash
+# .env
+OPENROUTER_API_KEY=sk-or-...
+```
+
+```bash
+npx po-genie -i languages/messages.pot -l nl_NL
+```
+
+**3. Or install globally:**
 
 ```bash
 npm install -g po-genie
-# or use without installing
-npx po-genie --help
+# then
+po-genie -i languages/messages.pot -l nl_NL
 ```
 
-## Quick start
+## Examples
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
-
 # Translate a .pot file to Dutch
-po-genie -i languages/messages.pot -l nl_NL
+npx po-genie -i languages/messages.pot -l nl_NL
 
 # Translate an existing .po file in-place (only fills missing strings)
-po-genie -i languages/messages-nl_NL.po -l nl_NL
+npx po-genie -i languages/messages-nl_NL.po -l nl_NL
 
 # Multiple locales at once
-po-genie -i languages/messages.pot -l nl_NL,de_DE,fr_FR
+npx po-genie -i languages/messages.pot -l nl_NL,de_DE,fr_FR
 
-# Specify model and project context for better quality
-po-genie -i languages/messages.pot -l nl_NL \
+# Specify model and add project context for better quality
+npx po-genie -i languages/messages.pot -l nl_NL \
   -m google/gemini-2.0-flash-001 \
   -c "WordPress WooCommerce loyalty plugin"
 ```
@@ -104,14 +127,6 @@ The following patterns are detected, tokenised before translation, and restored 
 | Positional printf | `%1$s`, `%2$d` |
 | Python-style | `%(name)s` |
 | Single-brace | `{variable}` |
-
-## Environment variables
-
-```bash
-OPENROUTER_API_KEY=sk-or-...   # Required — your OpenRouter API key
-```
-
-A `.env` file in the current directory is automatically loaded.
 
 ## Model recommendations
 
