@@ -84,6 +84,56 @@ po-genie [OPTIONS]
 | `messages-nl_NL.po` | `nl_NL` | `messages-nl_NL.po` (in-place) |
 | any | any | path from `--output` flag |
 
+## WordPress plugin & theme workflow
+
+If you use WP-CLI's `wp i18n` commands, po-genie fits naturally into your existing i18n workflow.
+
+**1. Generate your `.pot` file** (if you don't already have one):
+
+```bash
+wp i18n make-pot . languages/my-plugin.pot --slug=my-plugin --domain=my-plugin
+```
+
+**2. Add your API key** — create a `.env` file in your plugin/theme root:
+
+```bash
+# .env  (add this to .gitignore!)
+OPENROUTER_API_KEY=sk-or-...
+```
+
+**3. Translate:**
+
+```bash
+npx po-genie -i languages/my-plugin.pot -l nl_NL,de_DE,fr_FR \
+  -c "WordPress plugin for [what your plugin does]"
+```
+
+This generates `languages/my-plugin-nl_NL.po`, `my-plugin-de_DE.po`, etc.
+
+**4. Compile to `.mo`:**
+
+```bash
+wp i18n make-mo languages/
+```
+
+**Tip — add it to your `package.json` scripts** so the whole flow is one command:
+
+```json
+{
+  "scripts": {
+    "i18n": "wp i18n make-pot . languages/my-plugin.pot --slug=my-plugin --domain=my-plugin",
+    "i18n:translate": "po-genie -i languages/my-plugin.pot -l nl_NL,de_DE -c \"My plugin description\"",
+    "i18n:compile": "wp i18n make-mo languages/"
+  }
+}
+```
+
+```bash
+pnpm i18n && pnpm i18n:translate && pnpm i18n:compile
+```
+
+> **Re-running is safe.** po-genie only fills in `msgstr ""` entries. Already-translated strings are never touched. Run it again whenever you add new strings.
+
 ## Programmatic API
 
 ```ts
