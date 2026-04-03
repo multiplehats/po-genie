@@ -4,6 +4,8 @@ import { z } from 'zod'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { extractVariables, restoreVariables } from './variables.js'
 import { loadPO, localeToLanguageName } from './po.js'
+import { loadReadme } from './readme.js'
+import type { ReadmeSegment } from './readme.js'
 import type { TranslateOptions, TranslateResult, TokenUsage } from './types.js'
 
 const DEFAULT_MODEL = 'anthropic/claude-3.5-haiku'
@@ -87,6 +89,11 @@ function resolveOutputPath(input: string, locale: string, output?: string): stri
   const ext = extname(input)
   const name = basename(input, ext)
 
+  // readme.txt → readme-nl_NL.txt
+  if (ext === '.txt') {
+    return join(dir, `${name}-${locale}.txt`)
+  }
+
   // If the input is already a .po file containing the locale, write back in place
   if (ext === '.po' && name.endsWith(`-${locale}`)) {
     return resolve(input)
@@ -96,9 +103,142 @@ function resolveOutputPath(input: string, locale: string, output?: string): stri
   return join(dir, `${name}-${locale}.po`)
 }
 
+function buildReadmeSystemPrompt(targetLanguage: string): string {
+  return `You are translating a WordPress plugin readme file into ${targetLanguage}.
+
+Rules:
+- Translate the text naturally and accurately
+- Preserve all markdown formatting (bold, italic, links, lists)
+- Keep URLs unchanged — do not translate URLs
+- Keep code references unchanged (e.g. file paths, function names, CSS classes)
+- Keep [VAR_0], [VAR_1] etc. placeholders exactly as-is
+- Return a JSON object with a "translations" array containing the translated strings in the same order`
+}
+
+async function translateReadmeFile(
+  options: TranslateOptions & { locale: string },
+): Promise<TranslateResult> {
+  const {
+    input,
+    locale,
+    output,
+    model: modelId = DEFAULT_MODEL,
+    apiKey,
+    context,
+    batchSize = DEFAULT_BATCH_SIZE,
+    onProgress,
+  } = options
+
+  const resolvedKey = apiKey ?? process.env.OPENROUTER_API_KEY
+  if (!resolvedKey) {
+    throw new Error(
+      'OpenRouter API key is required. Set OPENROUTER_API_KEY or pass apiKey option.',
+    )
+  }
+
+  const openrouter = createOpenRouter({ apiKey: resolvedKey })
+  const model = openrouter.chat(modelId)
+  const targetLanguage = localeToLanguageName(locale)
+  const outputPath = resolveOutputPath(input, locale, output)
+
+  const readme = loadReadme(input)
+  const translatableSegments = readme.segments.filter(
+    (s): s is ReadmeSegment & { type: 'translatable' } => s.type === 'translatable',
+  )
+
+  const total = translatableSegments.length
+  const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+
+  if (total === 0) {
+    readme.save(outputPath)
+    return { locale, output: outputPath, translated: 0, skipped: 0, usage: emptyUsage }
+  }
+
+  // Extract variables and build templates for each segment
+  const extracted = translatableSegments.map((seg) => extractVariables(seg.content))
+
+  // Prepend context hints to templates for the AI
+  const templatesWithContext = translatableSegments.map((seg, i) => {
+    const ctx = seg.context
+    return ctx ? `[context: ${ctx}] ${extracted[i].template}` : extracted[i].template
+  })
+
+  // Split into batches
+  const batches: number[][] = []
+  for (let i = 0; i < extracted.length; i += batchSize) {
+    batches.push(
+      Array.from({ length: Math.min(batchSize, extracted.length - i) }, (_, j) => i + j),
+    )
+  }
+
+  let translated = 0
+  let promptTokens = 0
+  let completionTokens = 0
+
+  const systemPrompt = buildReadmeSystemPrompt(targetLanguage)
+  const contextLine = context ? `\nProject context: ${context}` : ''
+
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+    const indices = batches[batchIndex]
+    const templates = indices.map((i) => templatesWithContext[i])
+
+    const { object, usage } = await generateObject({
+      model,
+      schema: translationsSchema,
+      messages: [
+        { role: 'system', content: systemPrompt + contextLine },
+        { role: 'user', content: JSON.stringify(templates) },
+      ],
+    })
+
+    if (object.translations.length !== templates.length) {
+      throw new Error(
+        `AI returned ${object.translations.length} translations for ${templates.length} inputs`,
+      )
+    }
+
+    promptTokens += usage.promptTokens
+    completionTokens += usage.completionTokens
+
+    for (let j = 0; j < indices.length; j++) {
+      const entryIndex = indices[j]
+      const restored = restoreVariables(object.translations[j], extracted[entryIndex].vars)
+      translatableSegments[entryIndex].translated = restored
+      translated++
+    }
+
+    onProgress?.({
+      locale,
+      translated,
+      total,
+      batch: batchIndex + 1,
+      batches: batches.length,
+    })
+  }
+
+  readme.save(outputPath)
+
+  const totalTokens = promptTokens + completionTokens
+  const estimatedCostUsd = estimateCost(modelId, promptTokens, completionTokens)
+
+  return {
+    locale,
+    output: outputPath,
+    translated,
+    skipped: 0,
+    usage: { promptTokens, completionTokens, totalTokens, estimatedCostUsd },
+  }
+}
+
 export async function translateFile(
   options: TranslateOptions & { locale: string },
 ): Promise<TranslateResult> {
+  const ext = extname(options.input).toLowerCase()
+
+  if (ext === '.txt') {
+    return translateReadmeFile(options)
+  }
+
   const {
     input,
     locale,
