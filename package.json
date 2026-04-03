@@ -26,7 +26,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepublishOnly": "pnpm run build && pnpm run test",
-    "ci:publish": "pnpm run build && changeset publish"
+    "ci:publish": "pnpm run build && npm publish --provenance --access public"
   },
   "dependencies": {
     "@openrouter/ai-sdk-provider": "^0.4.5",
