@@ -47,7 +47,4 @@ jobs:
 
       - name: Publish to npm (trusted publishing)
         if: steps.changesets.outputs.hasChangesets == 'false'
-        run: |
-          # Remove the .npmrc created by setup-node so npm uses OIDC instead of NODE_AUTH_TOKEN
-          rm -f "$NPM_CONFIG_USERCONFIG"
-          npm publish --provenance --access public
+        run: npm publish --provenance --access public
