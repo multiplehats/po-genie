@@ -1,5 +1,5 @@
 export interface TranslateOptions {
-  /** Path to the source .po or .pot file */
+  /** Path to the source .po, .pot, or readme .txt file */
   input: string
   /** Target locale(s), e.g. "nl_NL" or ["nl_NL", "de_DE"] */
   locale: string | string[]

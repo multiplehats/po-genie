@@ -7,12 +7,12 @@ const main = defineCommand({
   meta: {
     name: 'po-genie',
     version: '0.1.0',
-    description: 'AI-powered .po file translator',
+    description: 'AI-powered .po and readme.txt translator',
   },
   args: {
     input: {
       type: 'string',
-      description: 'Path to the source .po or .pot file',
+      description: 'Path to the source .po, .pot, or readme .txt file',
       required: true,
       alias: 'i',
     },
