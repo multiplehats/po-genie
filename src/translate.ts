@@ -62,6 +62,7 @@ async function translateBatch(
 ): Promise<{ translations: string[]; promptTokens: number; completionTokens: number }> {
   const { object, usage } = await generateObject({
     model,
+    maxTokens: 4096,
     schema: translationsSchema,
     messages: [
       { role: 'system', content: buildSystemPrompt(targetLanguage, context) },
@@ -184,6 +185,7 @@ async function translateReadmeFile(
 
     const { object, usage } = await generateObject({
       model,
+      maxTokens: 4096,
       schema: translationsSchema,
       messages: [
         { role: 'system', content: systemPrompt + contextLine },
