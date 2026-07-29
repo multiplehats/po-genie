@@ -110,6 +110,42 @@ function resolveOutputPath(input: string, locale: string, output?: string): stri
   return join(dir, `${name}-${locale}.po`)
 }
 
+function planOutputPath(input: string, locale: string, output: string | undefined, multipleLocales: boolean): string {
+  if (!multipleLocales || !output) return resolveOutputPath(input, locale, output)
+
+  return join(resolve(output), basename(resolveOutputPath(input, locale)))
+}
+
+function normalizeLocales(locale: TranslateOptions['locale']): string[] {
+  const locales = (Array.isArray(locale) ? locale : [locale]).map((value) => value.trim())
+  const seen = new Set<string>()
+
+  for (const value of locales) {
+    if (!value) throw new Error('Locale must not be empty')
+    if (seen.has(value)) throw new Error(`Duplicate locale: ${value}`)
+    seen.add(value)
+  }
+
+  return locales
+}
+
+function planTranslationJobs(options: TranslateOptions): Array<TranslateOptions & { locale: string; output: string }> {
+  const locales = normalizeLocales(options.locale)
+  const multipleLocales = locales.length > 1
+  const jobs = locales.map((locale) => ({
+    ...options,
+    locale,
+    output: planOutputPath(options.input, locale, options.output, multipleLocales),
+  }))
+  const outputPaths = new Set(jobs.map((job) => job.output))
+
+  if (outputPaths.size !== jobs.length) {
+    throw new Error('Multiple locales resolve to the same output path')
+  }
+
+  return jobs
+}
+
 function buildReadmeSystemPrompt(targetLanguage: string): string {
   return `You are translating a WordPress plugin readme file into ${targetLanguage}.
 
@@ -344,6 +380,5 @@ export async function translateFile(
 }
 
 export async function translate(options: TranslateOptions): Promise<TranslateResult[]> {
-  const locales = Array.isArray(options.locale) ? options.locale : [options.locale]
-  return Promise.all(locales.map((locale) => translateFile({ ...options, locale })))
+  return Promise.all(planTranslationJobs(options).map((job) => translateFile(job)))
 }

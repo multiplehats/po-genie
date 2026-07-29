@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { loadReadme } from '../src/readme.js'
@@ -18,7 +18,7 @@ vi.mock('ai', () => ({
 }))
 
 import { generateObject } from 'ai'
-import { translateFile } from '../src/translate.js'
+import { translate, translateFile } from '../src/translate.js'
 
 const README_FIXTURE = join(import.meta.dirname, 'fixtures', 'readme.txt')
 
@@ -211,5 +211,35 @@ describe('translateFile with readme', () => {
 
     await expect(translation).resolves.toMatchObject({ translated: total })
     expect(generateObject).toHaveBeenCalledTimes(total)
+  })
+})
+
+describe('translate readme with multiple locales', () => {
+  it('treats an explicit output as a directory and writes one readme per locale', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translations')
+    mkdirSync(output)
+    writeFileSync(input, readFileSync(README_FIXTURE))
+
+    const total = countTranslatable()
+    mockAI([
+      Array.from({ length: total }, (_, i) => `Nederlands-${i}`),
+      Array.from({ length: total }, (_, i) => `Deutsch-${i}`),
+    ])
+
+    const results = await translate({
+      input,
+      locale: ['nl_NL', 'de_DE'],
+      output,
+      apiKey: 'test-key',
+    })
+
+    expect(results.map((result) => result.locale)).toEqual(['nl_NL', 'de_DE'])
+    expect(results.map((result) => result.output)).toEqual([
+      join(output, 'readme-nl_NL.txt'),
+      join(output, 'readme-de_DE.txt'),
+    ])
+    expect(readFileSync(join(output, 'readme-nl_NL.txt'), 'utf-8')).toContain('Nederlands-0')
+    expect(readFileSync(join(output, 'readme-de_DE.txt'), 'utf-8')).toContain('Deutsch-0')
   })
 })

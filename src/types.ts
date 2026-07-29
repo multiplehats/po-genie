@@ -4,8 +4,9 @@ export interface TranslateOptions {
   /** Target locale(s), e.g. "nl_NL" or ["nl_NL", "de_DE"] */
   locale: string | string[]
   /**
-   * Output path. Defaults to input dir + `/<filename>-<locale>.po`.
-   * When multiple locales are given, this is used as a directory.
+   * Output path. With one locale, this is the exact output file; by default,
+   * a locale-suffixed file is created beside the input. With multiple locales,
+   * this is the directory for those locale-suffixed files.
    */
   output?: string
   /** OpenRouter model to use. Defaults to "anthropic/claude-3.5-haiku" */

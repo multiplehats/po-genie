@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -22,7 +22,7 @@ vi.mock('citty', () => ({
 }))
 
 import { generateObject } from 'ai'
-import { translateFile } from '../src/translate.js'
+import { translate, translateFile } from '../src/translate.js'
 
 const UNTRANSLATED_PO = `
 msgid ""
@@ -296,5 +296,76 @@ msgstr "Opslaan"
 
     expect(result.translated).toBe(0)
     expect(generateObject).not.toHaveBeenCalled()
+  })
+})
+
+describe('translate with multiple locales', () => {
+  it('keeps an explicit output as the exact file path for one locale', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    const output = join(tmpDir, 'custom.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    mockAI([['Opslaan', 'Annuleren', 'Fout']])
+
+    const [result] = await translate({
+      input,
+      locale: 'nl_NL',
+      output,
+      apiKey: 'test-key',
+    })
+
+    expect(result.output).toBe(output)
+    expect(readFileSync(output, 'utf-8')).toContain('msgstr "Opslaan"')
+  })
+
+  it('rejects duplicate normalized locales before requesting translations', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+
+    await expect(translate({
+      input,
+      locale: ['nl_NL', ' nl_NL '],
+      apiKey: 'test-key',
+    })).rejects.toThrow('Duplicate locale: nl_NL')
+
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty locale before requesting translations', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+
+    await expect(translate({
+      input,
+      locale: ['nl_NL', '  '],
+      apiKey: 'test-key',
+    })).rejects.toThrow('Locale must not be empty')
+
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('treats an explicit output as a directory and writes one PO file per locale', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    const output = join(tmpDir, 'translations')
+    mkdirSync(output)
+    writeFileSync(input, UNTRANSLATED_PO)
+    mockAI([
+      ['Opslaan', 'Annuleren', 'Fout'],
+      ['Speichern', 'Abbrechen', 'Fehler'],
+    ])
+
+    const results = await translate({
+      input,
+      locale: ['nl_NL', 'de_DE'],
+      output,
+      apiKey: 'test-key',
+    })
+
+    expect(results.map((result) => result.locale)).toEqual(['nl_NL', 'de_DE'])
+    expect(results.map((result) => result.output)).toEqual([
+      join(output, 'messages-nl_NL.po'),
+      join(output, 'messages-de_DE.po'),
+    ])
+    expect(readFileSync(join(output, 'messages-nl_NL.po'), 'utf-8')).toContain('msgstr "Opslaan"')
+    expect(readFileSync(join(output, 'messages-de_DE.po'), 'utf-8')).toContain('msgstr "Speichern"')
   })
 })
