@@ -16,6 +16,11 @@ vi.mock('ai', () => ({
   generateObject: vi.fn(),
 }))
 
+vi.mock('citty', () => ({
+  defineCommand: vi.fn((command) => command),
+  runMain: vi.fn(),
+}))
+
 import { generateObject } from 'ai'
 import { translateFile } from '../src/translate.js'
 
@@ -82,6 +87,22 @@ function mockAI(responses: string[][]) {
 }
 
 describe('translateFile', () => {
+  it.each([
+    ['abc', Number.NaN],
+    ['2.5', 2.5],
+    ['0', 0],
+    ['-1', -1],
+  ])('keeps invalid --batch-size text intact for shared validation: %s', async (value, expected) => {
+    const { parseBatchSize } = await import('../src/cli.js')
+
+    const actual = parseBatchSize(value)
+    if (Number.isNaN(expected)) {
+      expect(actual).toSatisfy(Number.isNaN)
+      return
+    }
+    expect(actual).toBe(expected)
+  })
+
   it('translates all empty msgstr entries and writes output', async () => {
     const input = join(tmpDir, 'input.po')
     writeFileSync(input, UNTRANSLATED_PO)
@@ -217,6 +238,35 @@ describe('translateFile', () => {
 
     expect(result.translated).toBe(3)
     expect(generateObject).toHaveBeenCalledTimes(3)
+  })
+
+  it.each([
+    { batchSize: 0, error: 'batchSize must be a positive integer' },
+    { batchSize: -1, error: 'batchSize must be a positive integer' },
+    { batchSize: Number.NaN, error: 'batchSize must be a positive integer' },
+    { batchSize: 1.5, error: 'batchSize must be a positive integer' },
+    { batchSize: 1, calls: 3 },
+  ])('validates batchSize $batchSize before translating PO entries', async ({ batchSize, error, calls }) => {
+    if (error) {
+      delete process.env.OPENROUTER_API_KEY
+      const translation = translateFile({ input: 'input.po', locale: 'nl_NL', batchSize })
+      await expect(translation).rejects.toThrow(error)
+      expect(generateObject).not.toHaveBeenCalled()
+      return
+    }
+
+    const input = join(tmpDir, 'input.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    mockAI([['Instellingen opslaan'], ['Annuleren'], ['Fout']])
+    const translation = translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize,
+    })
+
+    await expect(translation).resolves.toMatchObject({ translated: 3 })
+    expect(generateObject).toHaveBeenCalledTimes(calls)
   })
 
   it('throws when API key is missing', async () => {

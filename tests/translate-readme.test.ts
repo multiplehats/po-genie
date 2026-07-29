@@ -182,4 +182,34 @@ describe('translateFile with readme', () => {
       expect(saved).toContain(`vertaald-${i}`)
     }
   })
+
+  it.each([
+    { batchSize: 0, error: 'batchSize must be a positive integer' },
+    { batchSize: -1, error: 'batchSize must be a positive integer' },
+    { batchSize: Number.NaN, error: 'batchSize must be a positive integer' },
+    { batchSize: 1.5, error: 'batchSize must be a positive integer' },
+    { batchSize: 1 },
+  ])('validates batchSize $batchSize before translating readme segments', async ({ batchSize, error }) => {
+    if (error) {
+      delete process.env.OPENROUTER_API_KEY
+      const translation = translateFile({ input: 'readme.txt', locale: 'nl_NL', batchSize })
+      await expect(translation).rejects.toThrow(error)
+      expect(generateObject).not.toHaveBeenCalled()
+      return
+    }
+
+    const input = join(tmpDir, 'readme.txt')
+    writeFileSync(input, readFileSync(README_FIXTURE))
+    const total = countTranslatable()
+    mockAI(Array.from({ length: total }, (_, i) => [`translated-${i}`]))
+    const translation = translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize,
+    })
+
+    await expect(translation).resolves.toMatchObject({ translated: total })
+    expect(generateObject).toHaveBeenCalledTimes(total)
+  })
 })

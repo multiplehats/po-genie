@@ -11,6 +11,12 @@ import type { TranslateOptions, TranslateResult, TokenUsage } from './types.js'
 const DEFAULT_MODEL = 'anthropic/claude-3.5-haiku'
 const DEFAULT_BATCH_SIZE = 40
 
+function validateBatchSize(batchSize: number): void {
+  if (!Number.isFinite(batchSize) || !Number.isInteger(batchSize) || batchSize <= 0) {
+    throw new Error('batchSize must be a positive integer')
+  }
+}
+
 /**
  * Cost per million tokens (input / output) in USD for common OpenRouter models.
  * https://openrouter.ai/models — update as prices change.
@@ -235,6 +241,8 @@ async function translateReadmeFile(
 export async function translateFile(
   options: TranslateOptions & { locale: string },
 ): Promise<TranslateResult> {
+  validateBatchSize(options.batchSize === undefined ? DEFAULT_BATCH_SIZE : options.batchSize)
+
   const ext = extname(options.input).toLowerCase()
 
   if (ext === '.txt') {

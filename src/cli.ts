@@ -3,6 +3,10 @@ import { defineCommand, runMain } from 'citty'
 import { translate } from './translate.js'
 import type { Progress } from './types.js'
 
+export function parseBatchSize(value: string | undefined): number | undefined {
+  return value === undefined ? undefined : Number(value)
+}
+
 const main = defineCommand({
   meta: {
     name: 'po-genie',
@@ -49,7 +53,7 @@ const main = defineCommand({
   },
   async run({ args }) {
     const locales = args.locale.split(',').map((l: string) => l.trim())
-    const batchSize = args['batch-size'] ? parseInt(args['batch-size'], 10) : undefined
+    const batchSize = parseBatchSize(args['batch-size'])
 
     let lastLocale = ''
 
