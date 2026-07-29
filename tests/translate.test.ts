@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import gettextParser from 'gettext-parser'
 
 // ---------------------------------------------------------------------------
 // Mock the AI SDK — we don't want real API calls in unit tests
@@ -83,6 +84,18 @@ msgid "Cancel"
 msgstr ""
 `.trim()
 
+const STALE_LANGUAGE_PO = `
+msgid ""
+msgstr ""
+"Project-Id-Version: po-genie test\\n"
+"Content-Type: text/plain; charset=UTF-8\\n"
+"Language: en_US\\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\\n"
+
+msgid "File"
+msgstr ""
+`.trim()
+
 let tmpDir: string
 
 beforeEach(() => {
@@ -103,6 +116,10 @@ function mockAI(responses: string[][]) {
       usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
     } as any
   })
+}
+
+function readHeaders(file: string): Record<string, string> {
+  return gettextParser.po.parse(readFileSync(file)).headers
 }
 
 describe('translateFile', () => {
@@ -140,6 +157,29 @@ describe('translateFile', () => {
     expect(saved).toContain('msgstr "Instellingen opslaan"')
     expect(saved).toContain('msgstr "Annuleren"')
     expect(saved).toContain('msgstr "Fout"')
+
+    const headers = readHeaders(result.output)
+    expect(headers.Language).toBe('nl_NL')
+    expect(headers['Plural-Forms']).toBe('nplurals = 2; plural = (n != 1);')
+  })
+
+  it('sets Polish metadata on the normal translated save path and preserves other headers', async () => {
+    const input = join(tmpDir, 'messages.po')
+    writeFileSync(input, STALE_LANGUAGE_PO)
+    mockAI([['Plik']])
+
+    const result = await translateFile({
+      input,
+      locale: 'pl_PL',
+      apiKey: 'test-key',
+    })
+
+    const headers = readHeaders(result.output)
+    expect(headers.Language).toBe('pl_PL')
+    expect(headers['Plural-Forms']).toBe(
+      'nplurals = 3; plural = (n == 1 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2);',
+    )
+    expect(headers['Project-Id-Version']).toBe('po-genie test')
   })
 
   it('restores variables in translated output', async () => {
@@ -328,7 +368,9 @@ describe('translateFile', () => {
     const nothingMissing = `
 msgid ""
 msgstr ""
+"Project-Id-Version: po-genie test\\n"
 "Content-Type: text/plain; charset=UTF-8\\n"
+"Language: \\n"
 
 msgid "Save"
 msgstr "Opslaan"
@@ -341,6 +383,30 @@ msgstr "Opslaan"
 
     expect(result.translated).toBe(0)
     expect(generateObject).not.toHaveBeenCalled()
+
+    const headers = readHeaders(result.output)
+    expect(headers.Language).toBe('nl_NL')
+    expect(headers['Plural-Forms']).toBe('nplurals = 2; plural = (n != 1);')
+    expect(headers['Project-Id-Version']).toBe('po-genie test')
+  })
+
+  it('rejects an unsupported locale before translating or replacing output', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    const output = join(tmpDir, 'messages-xx_XX.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    writeFileSync(output, 'existing output')
+
+    await expect(
+      translateFile({
+        input,
+        locale: 'xx_XX',
+        output,
+        apiKey: 'test-key',
+      }),
+    ).rejects.toThrow('Unsupported gettext plural rules for locale "xx_XX"')
+
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(readFileSync(output, 'utf-8')).toBe('existing output')
   })
 })
 

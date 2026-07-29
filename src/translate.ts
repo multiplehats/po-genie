@@ -338,6 +338,7 @@ export async function translateFile(
   const outputPath = resolveOutputPath(input, locale, output)
 
   const po = loadPO(input)
+  po.setLocale(locale)
 
   const toTranslate = onlyMissing
     ? po.entries.filter((e) => !e.msgstr)
