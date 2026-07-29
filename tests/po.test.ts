@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import gettextParser from 'gettext-parser'
-import { loadPO, localeToLanguageName } from '../src/po.js'
+import { loadPO, localeMetadataFor, localeToLanguageName } from '../src/po.js'
 
 const SIMPLE_PO = `
 msgid ""
@@ -42,6 +42,18 @@ msgstr ""
 
 msgid "File"
 msgstr "File"
+`.trim()
+
+const PO_WITH_PLURAL_ENTRY = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+"Language: nl_NL\\n"
+
+msgid "File"
+msgid_plural "Files"
+msgstr[0] "Bestand"
+msgstr[1] "Bestanden"
 `.trim()
 
 let tmpDir: string
@@ -89,6 +101,35 @@ describe('loadPO', () => {
     expect(cancel!.msgstr).toBe('')
   })
 
+  it('preserves plural source text and every translation form', () => {
+    const file = join(tmpDir, 'plural.po')
+    const out = join(tmpDir, 'plural-out.po')
+    writeFileSync(file, PO_WITH_PLURAL_ENTRY)
+
+    const po = loadPO(file)
+    const files = po.entries.find((entry) => entry.msgid === 'File')
+
+    expect(files).toMatchObject({
+      msgid: 'File',
+      msgid_plural: 'Files',
+      msgstr: 'Bestand',
+      msgstrs: ['Bestand', 'Bestanden'],
+    })
+
+    files!.msgstrs[0] = 'Bestand aangepast'
+    files!.msgstrs[1] = 'Bestanden aangepast'
+    expect(files!.msgstr).toBe('Bestand aangepast')
+    expect(Reflect.set(files!, 'msgstr', 'Bestand via compatibility')).toBe(true)
+    expect(files!.msgstrs[0]).toBe('Bestand via compatibility')
+    po.save(out)
+
+    const saved = gettextParser.po.parse(readFileSync(out))
+    expect(saved.translations['']?.File?.msgstr).toEqual([
+      'Bestand via compatibility',
+      'Bestanden aangepast',
+    ])
+  })
+
   it('saves mutations back to file via _item reference', () => {
     const file = join(tmpDir, 'test.po')
     const out = join(tmpDir, 'out.po')
@@ -129,9 +170,15 @@ describe('loadPO', () => {
     writeFileSync(file, POT_WITH_EMPTY_LANGUAGE)
 
     const po = loadPO(file)
+    const metadata = localeMetadataFor('nl-NL')
     po.setLocale('nl-NL')
     po.save(out)
 
+    expect(metadata).toMatchObject({
+      locale: 'nl_NL',
+      pluralForms: 'nplurals=2; plural=(n != 1);',
+      pluralFormCount: 2,
+    })
     const headers = readHeaders(out)
     expect(headers.Language).toBe('nl_NL')
     expect(headers['Plural-Forms']).toBe('nplurals=2; plural=(n != 1);')
@@ -145,9 +192,14 @@ describe('loadPO', () => {
     writeFileSync(file, PO_WITH_STALE_LANGUAGE)
 
     const po = loadPO(file)
+    const metadata = localeMetadataFor('pl_PL')
     po.setLocale('pl_PL')
     po.save(out)
 
+    expect(metadata).toMatchObject({
+      locale: 'pl_PL',
+      pluralFormCount: 3,
+    })
     const headers = readHeaders(out)
     expect(headers.Language).toBe('pl_PL')
     expect(headers['Plural-Forms']).toBe(

@@ -3,8 +3,12 @@ import { readFileSync, writeFileSync } from 'node:fs'
 
 export interface POEntry {
   msgid: string
+  msgid_plural?: string
   msgctxt?: string
+  /** Compatibility view of msgstrs[0]. */
   msgstr: string
+  /** Authoritative gettext translation forms, indexed by plural slot. */
+  msgstrs: string[]
   /** Reference back to the parsed item for mutation */
   _item: gettextParser.GetTextTranslation
 }
@@ -164,6 +168,30 @@ function pluralFormsForLocale(locale: string): string {
   return header
 }
 
+export interface LocaleMetadata {
+  locale: string
+  pluralForms: string
+  pluralFormCount: number
+}
+
+/** Resolve validated GNU gettext metadata for a target locale. */
+export function localeMetadataFor(locale: string): LocaleMetadata {
+  const normalizedLocale = normalizeLocale(locale)
+  const pluralForms = pluralFormsForLocale(normalizedLocale)
+  // pluralFormsForLocale has already validated this GNU nplurals header.
+  const formCount = pluralForms.match(/^nplurals\s*=\s*([1-9]\d*)\s*;/)?.[1]
+
+  if (!formCount) {
+    throw new Error(`Unsupported gettext plural rules for locale "${normalizedLocale}"`)
+  }
+
+  return {
+    locale: normalizedLocale,
+    pluralForms,
+    pluralFormCount: Number(formCount),
+  }
+}
+
 export function loadPO(filePath: string): POFile {
   const content = readFileSync(filePath)
   const parsed = gettextParser.po.parse(content)
@@ -177,8 +205,15 @@ export function loadPO(filePath: string): POFile {
 
       entries.push({
         msgid: item.msgid,
+        msgid_plural: item.msgid_plural,
         msgctxt: item.msgctxt,
-        msgstr: item.msgstr[0] ?? '',
+        get msgstr() {
+          return item.msgstr[0] ?? ''
+        },
+        set msgstr(value) {
+          item.msgstr[0] = value
+        },
+        msgstrs: item.msgstr,
         _item: item,
       })
     }
@@ -187,10 +222,9 @@ export function loadPO(filePath: string): POFile {
   return {
     entries,
     setLocale(locale) {
-      const normalizedLocale = normalizeLocale(locale)
-      const pluralForms = pluralFormsForLocale(normalizedLocale)
-      parsed.headers.Language = normalizedLocale
-      parsed.headers['Plural-Forms'] = pluralForms
+      const metadata = localeMetadataFor(locale)
+      parsed.headers.Language = metadata.locale
+      parsed.headers['Plural-Forms'] = metadata.pluralForms
     },
     save(outputPath) {
       const output = gettextParser.po.compile(parsed)

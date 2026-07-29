@@ -1,6 +1,7 @@
 declare module 'gettext-parser' {
   export interface GetTextTranslation {
     msgid: string
+    msgid_plural?: string
     msgctxt?: string
     msgstr: string[]
     comments?: {
