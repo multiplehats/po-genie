@@ -215,6 +215,28 @@ describe('translateFile with readme', () => {
 })
 
 describe('translate readme with multiple locales', () => {
+  it('writes stable, distinct default readme outputs for multiple locales', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    writeFileSync(input, readFileSync(README_FIXTURE))
+
+    const total = countTranslatable()
+    mockAI([
+      Array.from({ length: total }, (_, i) => `Nederlands-${i}`),
+      Array.from({ length: total }, (_, i) => `Deutsch-${i}`),
+    ])
+
+    const results = await translate({ input, locale: ['nl_NL', 'de_DE'], apiKey: 'test-key' })
+
+    expect(results.map((result) => result.locale)).toEqual(['nl_NL', 'de_DE'])
+    expect(results.map((result) => result.output)).toEqual([
+      join(tmpDir, 'readme-nl_NL.txt'),
+      join(tmpDir, 'readme-de_DE.txt'),
+    ])
+    expect(new Set(results.map((result) => result.output)).size).toBe(2)
+    expect(readFileSync(join(tmpDir, 'readme-nl_NL.txt'), 'utf-8')).toContain('Nederlands-0')
+    expect(readFileSync(join(tmpDir, 'readme-de_DE.txt'), 'utf-8')).toContain('Deutsch-0')
+  })
+
   it('treats an explicit output as a directory and writes one readme per locale', async () => {
     const input = join(tmpDir, 'readme.txt')
     const output = join(tmpDir, 'translations')

@@ -22,6 +22,7 @@ vi.mock('citty', () => ({
 }))
 
 import { generateObject } from 'ai'
+import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import { translate, translateFile } from '../src/translate.js'
 
 const UNTRANSLATED_PO = `
@@ -330,6 +331,34 @@ describe('translate with multiple locales', () => {
     expect(generateObject).not.toHaveBeenCalled()
   })
 
+  it('rejects case and separator equivalent locales before creating a provider', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+
+    await expect(translate({
+      input,
+      locale: ['nl_NL', 'NL-nl'],
+      apiKey: 'test-key',
+    })).rejects.toThrow('Duplicate locale: nl_NL')
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects traversal-like locale input before creating a provider', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+
+    await expect(translate({
+      input,
+      locale: ['nl_NL', '../de_DE'],
+      apiKey: 'test-key',
+    })).rejects.toThrow('Invalid locale: ../de_DE')
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
   it('rejects an empty locale before requesting translations', async () => {
     const input = join(tmpDir, 'messages.pot')
     writeFileSync(input, UNTRANSLATED_PO)
@@ -341,6 +370,93 @@ describe('translate with multiple locales', () => {
     })).rejects.toThrow('Locale must not be empty')
 
     expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty locale array before creating a provider', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+
+    await expect(translate({
+      input,
+      locale: [],
+      apiKey: 'test-key',
+    })).rejects.toThrow('At least one locale is required')
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects a missing multi-locale output directory before creating a provider', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    const output = join(tmpDir, 'missing-translations')
+    writeFileSync(input, UNTRANSLATED_PO)
+
+    await expect(translate({
+      input,
+      locale: ['nl_NL', 'de_DE'],
+      output,
+      apiKey: 'test-key',
+    })).rejects.toThrow(`Multi-locale output directory must exist: ${output}`)
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('rejects a file used as a multi-locale output directory before creating a provider', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    const output = join(tmpDir, 'not-a-directory')
+    writeFileSync(input, UNTRANSLATED_PO)
+    writeFileSync(output, 'not a directory')
+
+    await expect(translate({
+      input,
+      locale: ['nl_NL', 'de_DE'],
+      output,
+      apiKey: 'test-key',
+    })).rejects.toThrow(`Multi-locale output must be a directory: ${output}`)
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('writes stable, distinct default POT outputs for multiple locales', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+    mockAI([
+      ['Opslaan', 'Annuleren', 'Fout'],
+      ['Speichern', 'Abbrechen', 'Fehler'],
+    ])
+
+    const results = await translate({ input, locale: ['nl_NL', 'de_DE'], apiKey: 'test-key' })
+
+    expect(results.map((result) => result.locale)).toEqual(['nl_NL', 'de_DE'])
+    expect(results.map((result) => result.output)).toEqual([
+      join(tmpDir, 'messages-nl_NL.po'),
+      join(tmpDir, 'messages-de_DE.po'),
+    ])
+    expect(new Set(results.map((result) => result.output)).size).toBe(2)
+    expect(readFileSync(join(tmpDir, 'messages-nl_NL.po'), 'utf-8')).toContain('msgstr "Opslaan"')
+    expect(readFileSync(join(tmpDir, 'messages-de_DE.po'), 'utf-8')).toContain('msgstr "Speichern"')
+  })
+
+  it('writes stable, distinct default PO outputs for multiple locales', async () => {
+    const input = join(tmpDir, 'messages.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    mockAI([
+      ['Opslaan', 'Annuleren', 'Fout'],
+      ['Speichern', 'Abbrechen', 'Fehler'],
+    ])
+
+    const results = await translate({ input, locale: ['nl_NL', 'de_DE'], apiKey: 'test-key' })
+
+    expect(results.map((result) => result.locale)).toEqual(['nl_NL', 'de_DE'])
+    expect(results.map((result) => result.output)).toEqual([
+      join(tmpDir, 'messages-nl_NL.po'),
+      join(tmpDir, 'messages-de_DE.po'),
+    ])
+    expect(new Set(results.map((result) => result.output)).size).toBe(2)
+    expect(readFileSync(join(tmpDir, 'messages-nl_NL.po'), 'utf-8')).toContain('msgstr "Opslaan"')
+    expect(readFileSync(join(tmpDir, 'messages-de_DE.po'), 'utf-8')).toContain('msgstr "Speichern"')
   })
 
   it('treats an explicit output as a directory and writes one PO file per locale', async () => {

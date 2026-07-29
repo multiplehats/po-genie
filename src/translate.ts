@@ -1,6 +1,7 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import { generateObject } from 'ai'
 import { z } from 'zod'
+import { existsSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { extractVariables, restoreVariables } from './variables.js'
 import { loadPO, localeToLanguageName } from './po.js'
@@ -117,27 +118,51 @@ function planOutputPath(input: string, locale: string, output: string | undefine
 }
 
 function normalizeLocales(locale: TranslateOptions['locale']): string[] {
-  const locales = (Array.isArray(locale) ? locale : [locale]).map((value) => value.trim())
-  const seen = new Set<string>()
+  const values = Array.isArray(locale) ? locale : [locale]
+  if (values.length === 0) throw new Error('At least one locale is required')
 
-  for (const value of locales) {
-    if (!value) throw new Error('Locale must not be empty')
-    if (seen.has(value)) throw new Error(`Duplicate locale: ${value}`)
-    seen.add(value)
+  const seen = new Set<string>()
+  const locales: string[] = []
+
+  for (const value of values) {
+    const trimmed = value.trim()
+    if (!trimmed) throw new Error('Locale must not be empty')
+    if (!/^[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*$/.test(trimmed)) {
+      throw new Error(`Invalid locale: ${value}`)
+    }
+
+    let canonical: string
+    try {
+      canonical = Intl.getCanonicalLocales(trimmed.replaceAll('_', '-'))[0].replaceAll('-', '_')
+    } catch {
+      throw new Error(`Invalid locale: ${value}`)
+    }
+
+    const collisionKey = canonical.toLowerCase()
+    if (seen.has(collisionKey)) throw new Error(`Duplicate locale: ${canonical}`)
+    seen.add(collisionKey)
+    locales.push(canonical)
   }
 
   return locales
 }
 
+function validateMultiLocaleOutput(output: string | undefined): void {
+  if (!output) return
+  if (!existsSync(output)) throw new Error(`Multi-locale output directory must exist: ${output}`)
+  if (!statSync(output).isDirectory()) throw new Error(`Multi-locale output must be a directory: ${output}`)
+}
+
 function planTranslationJobs(options: TranslateOptions): Array<TranslateOptions & { locale: string; output: string }> {
   const locales = normalizeLocales(options.locale)
   const multipleLocales = locales.length > 1
+  if (multipleLocales) validateMultiLocaleOutput(options.output)
   const jobs = locales.map((locale) => ({
     ...options,
     locale,
     output: planOutputPath(options.input, locale, options.output, multipleLocales),
   }))
-  const outputPaths = new Set(jobs.map((job) => job.output))
+  const outputPaths = new Set(jobs.map((job) => job.output.toLowerCase()))
 
   if (outputPaths.size !== jobs.length) {
     throw new Error('Multiple locales resolve to the same output path')
