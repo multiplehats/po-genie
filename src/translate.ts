@@ -172,12 +172,6 @@ async function translateBatch(
     }),
   )
 
-  if (object.translations.length !== items.length) {
-    throw new Error(
-      `AI returned ${object.translations.length} translations for ${items.length} inputs`,
-    )
-  }
-
   return {
     translations: object.translations,
     promptTokens: usage.promptTokens,
@@ -417,14 +411,22 @@ async function translateReadmeFile(
       }),
     )
 
+    promptTokens += usage.promptTokens
+    completionTokens += usage.completionTokens
+
+    // Persist known paid usage before validating the response. The completed
+    // work remains at the last accepted batch until all translations validate.
+    saveCheckpoint(outputPath, checkpointIdentity, {
+      completedItemIds,
+      translations: checkpointTranslations,
+      usage: knownUsage(modelId, promptTokens, completionTokens),
+    })
+
     if (object.translations.length !== items.length) {
       throw new Error(
         `AI returned ${object.translations.length} translations for ${items.length} inputs`,
       )
     }
-
-    promptTokens += usage.promptTokens
-    completionTokens += usage.completionTokens
 
     for (let j = 0; j < batch.length; j++) {
       const job = batch[j]
@@ -675,6 +677,20 @@ export async function translateFile(
 
     promptTokens += result.promptTokens
     completionTokens += result.completionTokens
+
+    // Persist known paid usage before validating the response. The completed
+    // work remains at the last accepted batch until all translations validate.
+    saveCheckpoint(outputPath, checkpointIdentity, {
+      completedItemIds,
+      translations: checkpointTranslations,
+      usage: knownUsage(modelId, promptTokens, completionTokens),
+    })
+
+    if (result.translations.length !== items.length) {
+      throw new Error(
+        `AI returned ${result.translations.length} translations for ${items.length} inputs`,
+      )
+    }
 
     for (let j = 0; j < indices.length; j++) {
       const job = translationJobs[indices[j]]

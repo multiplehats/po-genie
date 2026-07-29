@@ -13,15 +13,24 @@ export function writeFileAtomically(
     `.${basename(destination)}.${randomUUID()}.tmp`,
   )
   let temporaryCreated = false
+  let descriptor: number | undefined
 
   try {
-    const descriptor = openSync(temporaryPath, 'wx')
+    descriptor = openSync(temporaryPath, 'wx')
     temporaryCreated = true
+    writeFileSync(descriptor, content, encoding)
     closeSync(descriptor)
+    descriptor = undefined
 
-    writeFileSync(temporaryPath, content, encoding)
     renameSync(temporaryPath, destination)
   } catch (error) {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor)
+      } catch {
+        // A failed close may still have released the descriptor.
+      }
+    }
     if (temporaryCreated) {
       try {
         unlinkSync(temporaryPath)

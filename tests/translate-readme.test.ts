@@ -59,6 +59,17 @@ function mockAI(responses: string[][]) {
   })
 }
 
+function expectDefaultUsageOnlyCheckpoint(output: string): void {
+  const checkpoint = JSON.parse(readFileSync(checkpointPathForOutput(output), 'utf8'))
+  expect(checkpoint.completedItemIds).toEqual([])
+  expect(checkpoint.translations).toEqual({})
+  expect(checkpoint.usage).toMatchObject({
+    promptTokens: 100,
+    completionTokens: 50,
+    totalTokens: 150,
+  })
+}
+
 /**
  * Count the translatable segments in the fixture so tests stay in sync
  * with the fixture file.
@@ -165,6 +176,74 @@ describe('translateFile with readme', () => {
     expect(saved).toContain('Tweede segment.')
     expect(saved).toContain('Derde segment.')
     expect(saved).not.toContain('First segment.')
+    expect(existsSync(checkpointPath)).toBe(false)
+  })
+
+  it('carries paid usage from an invalid later readme response into a clean resume', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, [
+      '=== Usage Plugin ===',
+      'Contributors: test',
+      '',
+      'First segment.',
+      '',
+      '== Description ==',
+      '',
+      'Visit https://example.com.',
+      '',
+    ].join('\n'))
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Eerste segment.'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockResolvedValueOnce({
+        object: { translations: ['Bezoek de ongeldige website.'] },
+        usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+      } as any)
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow(/item 2.*IMM_0/)
+
+    const checkpointPath = checkpointPathForOutput(output)
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf8'))
+    expect(checkpoint.completedItemIds).toHaveLength(1)
+    expect(Object.values(checkpoint.translations)).toEqual(['Eerste segment.'])
+    expect(JSON.stringify(checkpoint)).not.toContain('ongeldige')
+    expect(checkpoint.usage).toMatchObject({
+      promptTokens: 120,
+      completionTokens: 60,
+      totalTokens: 180,
+    })
+    expect(checkpoint.usage.estimatedCostUsd).toBeCloseTo(0.000336)
+
+    vi.mocked(generateObject).mockReset()
+    vi.mocked(generateObject).mockResolvedValueOnce({
+      object: { translations: ['Bezoek [IMM_0].'] },
+      usage: { promptTokens: 30, completionTokens: 15, totalTokens: 45 },
+    } as any)
+
+    const result = await translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })
+
+    expect(result.usage).toMatchObject({
+      promptTokens: 150,
+      completionTokens: 75,
+      totalTokens: 225,
+    })
+    expect(readFileSync(output, 'utf8')).toContain('Bezoek https://example.com.')
+    expect(readFileSync(output, 'utf8')).not.toContain('ongeldige')
     expect(existsSync(checkpointPath)).toBe(false)
   })
 
@@ -548,7 +627,7 @@ describe('translateFile with readme', () => {
 
     expect(generateObject).toHaveBeenCalledTimes(1)
     expect(existsSync(output)).toBe(false)
-    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+    expectDefaultUsageOnlyCheckpoint(output)
     expect(progress).toEqual([])
   })
 
@@ -608,7 +687,7 @@ describe('translateFile with readme', () => {
     ).toBe(true)
   })
 
-  it('does not retry or checkpoint a readme response-count mismatch', async () => {
+  it('does not retry or checkpoint invalid readme translations on a response-count mismatch', async () => {
     const input = join(tmpDir, 'readme.txt')
     const output = join(tmpDir, 'translated.txt')
     writeFileSync(input, [
@@ -633,7 +712,7 @@ describe('translateFile with readme', () => {
 
     expect(generateObject).toHaveBeenCalledTimes(1)
     expect(existsSync(output)).toBe(false)
-    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+    expectDefaultUsageOnlyCheckpoint(output)
   })
 
   it('rejects an invented raw immutable fragment even when expected tokens are preserved', async () => {
@@ -660,7 +739,7 @@ describe('translateFile with readme', () => {
 
     expect(generateObject).toHaveBeenCalledTimes(1)
     expect(existsSync(output)).toBe(false)
-    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+    expectDefaultUsageOnlyCheckpoint(output)
   })
 
   it('sends readme context as metadata without modifying translated text', async () => {

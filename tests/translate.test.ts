@@ -207,6 +207,17 @@ function mockAI(responses: string[][]) {
   })
 }
 
+function expectDefaultUsageOnlyCheckpoint(output: string): void {
+  const checkpoint = JSON.parse(readFileSync(checkpointPathForOutput(output), 'utf8'))
+  expect(checkpoint.completedItemIds).toEqual([])
+  expect(checkpoint.translations).toEqual({})
+  expect(checkpoint.usage).toMatchObject({
+    promptTokens: 100,
+    completionTokens: 50,
+    totalTokens: 150,
+  })
+}
+
 function readHeaders(file: string): Record<string, string> {
   return gettextParser.po.parse(readFileSync(file)).headers
 }
@@ -395,7 +406,7 @@ msgstr ""
 
     expect(generateObject).toHaveBeenCalledTimes(1)
     expect(existsSync(output)).toBe(false)
-    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+    expectDefaultUsageOnlyCheckpoint(output)
     expect(progress).toEqual([])
   })
 
@@ -661,7 +672,7 @@ msgstr ""
     ])
   })
 
-  it('rejects a plural response count mismatch before applying or saving the batch', async () => {
+  it('rejects a plural response count mismatch without checkpointing invalid translations', async () => {
     const input = join(tmpDir, 'messages-nl_NL.po')
     writeFileSync(input, TWO_FORM_PLURAL_PO)
     mockAI([['Eén item']])
@@ -673,7 +684,7 @@ msgstr ""
     })).rejects.toThrow('AI returned 1 translations for 2 inputs')
 
     expect(generateObject).toHaveBeenCalledTimes(1)
-    expect(existsSync(checkpointPathForOutput(input))).toBe(false)
+    expectDefaultUsageOnlyCheckpoint(input)
     expect(loadPO(input).entries[0].msgstrs).toEqual(['', ''])
   })
 
@@ -900,6 +911,68 @@ msgstr ""
       ['Error', 'Fout'],
     ])
     expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+  })
+
+  it('carries paid usage from an invalid later PO response into a clean resume', async () => {
+    const input = join(tmpDir, 'input.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Instellingen opslaan'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockResolvedValueOnce({
+        object: { translations: ['Ongeldig een', 'Ongeldig twee'] },
+        usage: { promptTokens: 20, completionTokens: 10, totalTokens: 30 },
+      } as any)
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow('AI returned 2 translations for 1 inputs')
+
+    const checkpointPath = checkpointPathForOutput(output)
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf8'))
+    expect(checkpoint.completedItemIds).toHaveLength(1)
+    expect(Object.values(checkpoint.translations)).toEqual(['Instellingen opslaan'])
+    expect(JSON.stringify(checkpoint)).not.toContain('Ongeldig')
+    expect(checkpoint.usage).toMatchObject({
+      promptTokens: 120,
+      completionTokens: 60,
+      totalTokens: 180,
+    })
+    expect(checkpoint.usage.estimatedCostUsd).toBeCloseTo(0.000336)
+
+    vi.mocked(generateObject).mockReset()
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Annuleren'] },
+        usage: { promptTokens: 30, completionTokens: 15, totalTokens: 45 },
+      } as any)
+      .mockResolvedValueOnce({
+        object: { translations: ['Fout'] },
+        usage: { promptTokens: 30, completionTokens: 15, totalTokens: 45 },
+      } as any)
+
+    const result = await translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })
+
+    expect(result.usage).toMatchObject({
+      promptTokens: 180,
+      completionTokens: 90,
+      totalTokens: 270,
+    })
+    expect(readFileSync(output, 'utf8')).not.toContain('Ongeldig')
+    expect(existsSync(checkpointPath)).toBe(false)
   })
 
   it.each([

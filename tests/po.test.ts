@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  writeFileSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import gettextParser from 'gettext-parser'
@@ -9,6 +17,8 @@ vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
   return {
     ...actual,
+    closeSync: vi.fn(actual.closeSync),
+    openSync: vi.fn(actual.openSync),
     writeFileSync: vi.fn(actual.writeFileSync),
   }
 })
@@ -194,22 +204,42 @@ describe('loadPO', () => {
     po.entries.find((entry) => entry.msgid === 'Cancel')!._item.msgstr = ['Annuleren']
 
     const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs')
+    const close = vi.mocked(closeSync)
+    const open = vi.mocked(openSync)
     const write = vi.mocked(writeFileSync)
+    const previousCloseImplementation = close.getMockImplementation()
+    const previousOpenImplementation = open.getMockImplementation()
     const previousImplementation = write.getMockImplementation()
-    write.mockImplementation((path, data, options) => {
+    const lifecycle: string[] = []
+    open.mockImplementation((path, flags, mode) => {
+      const descriptor = actualFs.openSync(path, flags, mode)
       if (typeof path === 'string' && dirname(path) === tmpDir && path !== out) {
-        actualFs.writeFileSync(path, Buffer.from('partial'))
+        lifecycle.push('open')
+      }
+      return descriptor
+    })
+    write.mockImplementation((target, data, options) => {
+      if (typeof target === 'number') {
+        lifecycle.push('write')
+        actualFs.writeFileSync(target, Buffer.from('partial'))
         throw new Error('injected write failure')
       }
-      return actualFs.writeFileSync(path, data, options)
+      return actualFs.writeFileSync(target, data, options)
+    })
+    close.mockImplementation((descriptor) => {
+      lifecycle.push('close')
+      return actualFs.closeSync(descriptor)
     })
 
     try {
       expect(() => po.save(out)).toThrow('injected write failure')
     } finally {
+      close.mockImplementation(previousCloseImplementation!)
+      open.mockImplementation(previousOpenImplementation!)
       write.mockImplementation(previousImplementation!)
     }
 
+    expect(lifecycle).toEqual(['open', 'write', 'close'])
     expect(readFileSync(out)).toEqual(original)
     expect(readdirSync(tmpDir).sort()).toEqual(['input.po', 'output.po'])
   })
