@@ -46,6 +46,11 @@ const translationsSchema = z.object({
     .describe('Translated strings in the same order as the input array'),
 })
 
+interface TranslationRequestItem {
+  template: string
+  msgctxt?: string
+}
+
 function buildSystemPrompt(targetLanguage: string, context?: string): string {
   const contextLine = context ? `\nProject context: ${context}` : ''
 
@@ -57,12 +62,13 @@ Rules:
 - Preserve printf specifiers (%s, %d) if any remain untokenised
 - Keep HTML tags unchanged
 - Match the tone: concise for labels/buttons, natural for descriptions
+- The optional msgctxt field is metadata for disambiguation; never include it in a translation
 - Do not add or remove punctuation unless required by the target language
 - Return ONLY the translated strings array — no explanations`
 }
 
 async function translateBatch(
-  strings: string[],
+  items: TranslationRequestItem[],
   targetLanguage: string,
   model: ReturnType<ReturnType<typeof createOpenRouter>['chat']>,
   context?: string,
@@ -73,13 +79,13 @@ async function translateBatch(
     schema: translationsSchema,
     messages: [
       { role: 'system', content: buildSystemPrompt(targetLanguage, context) },
-      { role: 'user', content: JSON.stringify(strings) },
+      { role: 'user', content: JSON.stringify(items) },
     ],
   })
 
-  if (object.translations.length !== strings.length) {
+  if (object.translations.length !== items.length) {
     throw new Error(
-      `AI returned ${object.translations.length} translations for ${strings.length} inputs`,
+      `AI returned ${object.translations.length} translations for ${items.length} inputs`,
     )
   }
 
@@ -364,9 +370,12 @@ export async function translateFile(
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
     const indices = batches[batchIndex]
-    const templates = indices.map((i) => extracted[i].template)
+    const items = indices.map((i) => ({
+      template: extracted[i].template,
+      ...(toTranslate[i].msgctxt ? { msgctxt: toTranslate[i].msgctxt } : {}),
+    }))
 
-    const result = await translateBatch(templates, targetLanguage, model, context)
+    const result = await translateBatch(items, targetLanguage, model, context)
 
     promptTokens += result.promptTokens
     completionTokens += result.completionTokens

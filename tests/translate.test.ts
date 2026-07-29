@@ -23,6 +23,7 @@ vi.mock('citty', () => ({
 
 import { generateObject } from 'ai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+import { loadPO } from '../src/po.js'
 import { translate, translateFile } from '../src/translate.js'
 
 const UNTRANSLATED_PO = `
@@ -60,6 +61,23 @@ msgstr ""
 
 msgid "Save settings"
 msgstr "Instellingen opslaan"
+
+msgid "Cancel"
+msgstr ""
+`.trim()
+
+const CONTEXTUAL_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgctxt "verb"
+msgid "Save"
+msgstr ""
+
+msgctxt "noun"
+msgid "Save"
+msgstr ""
 
 msgid "Cancel"
 msgstr ""
@@ -140,6 +158,32 @@ describe('translateFile', () => {
     expect(saved).toContain('{{credits}}')
     expect(saved).toContain('{{credits_currency}}')
     expect(saved).toContain('%s')
+  })
+
+  it('sends gettext contexts as metadata and saves translations under their original contexts', async () => {
+    const input = join(tmpDir, 'contextual.po')
+    writeFileSync(input, CONTEXTUAL_PO)
+    mockAI([['Annuleren', 'Opslaan', 'Bewaring']])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    const request = vi.mocked(generateObject).mock.calls[0][0]
+    expect(JSON.parse(request.messages![1].content as string)).toEqual([
+      { template: 'Cancel' },
+      { template: 'Save', msgctxt: 'verb' },
+      { template: 'Save', msgctxt: 'noun' },
+    ])
+
+    const saved = loadPO(result.output)
+    expect(saved.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ msgid: 'Save', msgctxt: 'verb', msgstr: 'Opslaan' }),
+      expect.objectContaining({ msgid: 'Save', msgctxt: 'noun', msgstr: 'Bewaring' }),
+      expect.objectContaining({ msgid: 'Cancel', msgctxt: undefined, msgstr: 'Annuleren' }),
+    ]))
   })
 
   it('skips already-translated entries when onlyMissing is true (default)', async () => {
