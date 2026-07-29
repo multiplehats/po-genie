@@ -1,5 +1,19 @@
 # po-genie
 
+## 0.3.0
+
+### Minor Changes
+
+- Translate every required gettext plural form and write authoritative target-locale metadata while preserving message context and completed translation slots. ([`cf932ab`](https://github.com/multiplehats/po-genie/commit/cf932ab0d6195f0244ad0ca711c5b95a0de32b20))
+
+- Resume interrupted PO and readme translations from identity-checked checkpoints, preserve known paid usage, and replace outputs atomically. ([`cf932ab`](https://github.com/multiplehats/po-genie/commit/cf932ab0d6195f0244ad0ca711c5b95a0de32b20))
+
+- Route multi-locale outputs safely, bound locale concurrency, preserve requested result order, and expose partial outcomes through `LocaleTranslationError`. ([`cf932ab`](https://github.com/multiplehats/po-genie/commit/cf932ab0d6195f0244ad0ca711c5b95a0de32b20))
+
+### Patch Changes
+
+- Validate batch sizes, response counts, variables, HTML, Markdown links, URLs, and inline code before accepting translated output. ([`cf932ab`](https://github.com/multiplehats/po-genie/commit/cf932ab0d6195f0244ad0ca711c5b95a0de32b20))
+
 ## 0.2.0
 
 ### Minor Changes
