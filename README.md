@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="PO Genie" width="720">
+</p>
+
 # po-genie
 
 AI-powered `.po` / `.pot` file translator. Fills in missing translations using any model available on [OpenRouter](https://openrouter.ai), with reliable variable detection so `{{credits}}`, `%s`, `%1$s` and friends always survive the round-trip.
