@@ -21,7 +21,6 @@ export default defineConfig({
         'ai',
         '@openrouter/ai-sdk-provider',
         'citty',
-        'std-env',
         'dotenv',
         'gettext-parser',
         'zod',
