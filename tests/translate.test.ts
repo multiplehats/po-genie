@@ -318,6 +318,32 @@ describe('translateFile', () => {
     expect(progress).toEqual([])
   })
 
+  it('round-trips literal token text, runtime variables, and complex immutable fragments together', async () => {
+    const content = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "Keep [VAR_0] and %s. Read [wiki](https://example.com/Foo_(bar)) with \`\`foo \`bar\` baz\`\` in <span title=\\"a > b\\">this</span>."
+msgstr ""
+`.trim()
+    const input = join(tmpDir, 'collisions.po')
+    writeFileSync(input, content)
+    mockAI([[
+      'Behoud [VAR_0] en [VAR1_0]. Lees [wiki]([IMM_0]) met [IMM_1] in [IMM_2]dit[IMM_3].',
+    ]])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    expect(loadPO(result.output).entries[0].msgstr).toBe(
+      'Behoud [VAR_0] en %s. Lees [wiki](https://example.com/Foo_(bar)) met ``foo `bar` baz`` in <span title="a > b">dit</span>.',
+    )
+  })
+
   it('sends gettext contexts as metadata and saves translations under their original contexts', async () => {
     const input = join(tmpDir, 'contextual.po')
     writeFileSync(input, CONTEXTUAL_PO)

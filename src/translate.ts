@@ -80,7 +80,7 @@ function buildSystemPrompt(targetLanguage: string, context?: string): string {
 Translate UI strings from English to ${targetLanguage}.${contextLine}
 
 Rules:
-- Preserve protected tokens like [VAR_0], [IMM_0], etc. exactly as-is
+- Preserve protected tokens like [VAR_0], [VAR1_0], [IMM_0], [IMM1_0], etc. exactly as-is
 - Preserve printf specifiers (%s, %d) if any remain untokenised
 - Keep HTML tags unchanged
 - Match the tone: concise for labels/buttons, natural for descriptions
@@ -206,7 +206,7 @@ Rules:
 - Preserve all markdown formatting (bold, italic, links, lists)
 - Keep URLs unchanged — do not translate URLs
 - Keep code references unchanged (e.g. file paths, function names, CSS classes)
-- Keep [VAR_0], [IMM_0] etc. protected tokens exactly as-is
+- Keep [VAR_0], [VAR1_0], [IMM_0], [IMM1_0] etc. protected tokens exactly as-is
 - Return a JSON object with a "translations" array containing the translated strings in the same order`
 }
 

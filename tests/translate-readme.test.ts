@@ -269,6 +269,31 @@ describe('translateFile with readme', () => {
     ).toBe(true)
   })
 
+  it('rejects an invented raw immutable fragment even when expected tokens are preserved', async () => {
+    const content = [
+      '=== Invented Fragment Plugin ===',
+      'Contributors: test',
+      '',
+      'Read [the wiki](https://example.com/Foo_(bar)).',
+      '',
+    ].join('\n')
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, content)
+    mockAI([[
+      'Lees [de wiki]([IMM_0]) op https://unexpected.example.',
+    ]])
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })).rejects.toThrow(/unexpected raw immutable fragment/)
+
+    expect(existsSync(output)).toBe(false)
+  })
+
   it('sends readme context as metadata without modifying translated text', async () => {
     const content = [
       '=== Context Plugin ===',

@@ -45,6 +45,16 @@ describe('extractVariables', () => {
     expect(vars).toEqual(['{{credits}}', '{{max}}'])
   })
 
+  it('uses a collision-safe namespace when source text contains a variable token', () => {
+    const original = 'Keep [VAR_0] literal and replace %s.'
+    const extracted = extractVariables(original)
+
+    expect(extracted.template).toBe('Keep [VAR_0] literal and replace [VAR1_0].')
+    expect(extracted.vars).toEqual(['%s'])
+    expect(extracted.tokenPrefix).toBe('VAR1')
+    expect(restoreVariables(extracted.template, extracted.vars)).toBe(original)
+  })
+
   it('returns unchanged string when no variables present', () => {
     const { template, vars } = extractVariables('No variables here')
     expect(template).toBe('No variables here')
@@ -117,6 +127,22 @@ describe('validateProtectedTokens', () => {
       { locale: 'nl_NL', batch: 1, item: 1 },
     )).toThrow(/VAR_0/)
   })
+
+  it('validates collision-safe variable namespaces independently from literal token-like text', () => {
+    const location = { locale: 'nl_NL', batch: 1, item: 1 }
+
+    expect(() => validateProtectedTokens(
+      'Keep [VAR_0] literal and replace [VAR1_0].',
+      'Behoud [VAR_0] letterlijk en vervang [VAR1_0].',
+      location,
+    )).not.toThrow()
+
+    expect(() => validateProtectedTokens(
+      'Keep [VAR_0] literal and replace [VAR1_0].',
+      'Behoud [VAR_0] letterlijk.',
+      location,
+    )).toThrow(/VAR1_0/)
+  })
 })
 
 describe('protected immutable fragments', () => {
@@ -155,6 +181,36 @@ describe('protected immutable fragments', () => {
     expect(restoreProtectedFragments(extracted.template, extracted)).toBe(
       'Keep [IMM_0] visible and visit https://example.com.',
     )
+  })
+
+  it('protects a complete balanced Markdown link destination', () => {
+    const original = 'Read [the wiki](https://example.com/Foo_(bar)).'
+    const extracted = extractProtectedFragments(original)
+
+    expect(extracted.template).toBe('Read [the wiki]([IMM_0]).')
+    expect(extracted.fragments).toEqual(['https://example.com/Foo_(bar)'])
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
+  })
+
+  it('protects a code span containing smaller backtick runs', () => {
+    const original = 'Use ``foo `bar` baz`` now.'
+    const extracted = extractProtectedFragments(original)
+
+    expect(extracted.template).toBe('Use [IMM_0] now.')
+    expect(extracted.fragments).toEqual(['``foo `bar` baz``'])
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
+  })
+
+  it('protects a complete HTML tag when quoted attributes contain closing brackets', () => {
+    const original = 'Read <span title="a > b" data-note=\'c > d\'>this</span>.'
+    const extracted = extractProtectedFragments(original)
+
+    expect(extracted.template).toBe('Read [IMM_0]this[IMM_1].')
+    expect(extracted.fragments).toEqual([
+      '<span title="a > b" data-note=\'c > d\'>',
+      '</span>',
+    ])
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
   })
 })
 
