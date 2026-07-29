@@ -96,6 +96,42 @@ msgid "File"
 msgstr ""
 `.trim()
 
+const TWO_FORM_PLURAL_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgctxt "cart"
+msgid "One item"
+msgid_plural "Many items"
+msgstr[0] ""
+msgstr[1] ""
+`.trim()
+
+const THREE_FORM_PLURAL_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "One file"
+msgid_plural "Many files"
+msgstr[0] ""
+msgstr[1] ""
+`.trim()
+
+const PARTIAL_THREE_FORM_PLURAL_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgctxt "storage"
+msgid "One file"
+msgid_plural "Many files"
+msgstr[0] "Jeden plik"
+msgstr[1] ""
+msgstr[2] "Wiele plików"
+`.trim()
+
 let tmpDir: string
 
 beforeEach(() => {
@@ -224,6 +260,143 @@ describe('translateFile', () => {
       expect.objectContaining({ msgid: 'Save', msgctxt: 'noun', msgstr: 'Bewaring' }),
       expect.objectContaining({ msgid: 'Cancel', msgctxt: undefined, msgstr: 'Annuleren' }),
     ]))
+  })
+
+  it('translates every required two-form slot and keeps plural metadata structured', async () => {
+    const input = join(tmpDir, 'plural.po')
+    writeFileSync(input, TWO_FORM_PLURAL_PO)
+    mockAI([['Eén item', 'Meerdere items']])
+
+    const progress: Array<{ translated: number; total: number }> = []
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      onProgress: ({ translated, total }) => progress.push({ translated, total }),
+    })
+
+    const request = vi.mocked(generateObject).mock.calls[0][0]
+    expect(JSON.parse(request.messages![1].content as string)).toEqual([
+      {
+        template: 'One item',
+        singularSource: 'One item',
+        pluralSource: 'Many items',
+        formIndex: 0,
+        formCount: 2,
+        msgctxt: 'cart',
+      },
+      {
+        template: 'Many items',
+        singularSource: 'One item',
+        pluralSource: 'Many items',
+        formIndex: 1,
+        formCount: 2,
+        msgctxt: 'cart',
+      },
+    ])
+
+    expect(result).toMatchObject({ translated: 1, skipped: 0 })
+    expect(progress).toEqual([{ translated: 1, total: 1 }])
+    expect(loadPO(result.output).entries[0].msgstrs).toEqual([
+      'Eén item',
+      'Meerdere items',
+    ])
+  })
+
+  it('uses target locale form count and reports completion only after all entry jobs apply', async () => {
+    const input = join(tmpDir, 'plural.po')
+    writeFileSync(input, THREE_FORM_PLURAL_PO)
+    mockAI([['Jeden plik'], ['Pliki'], ['Wiele plików']])
+
+    const progress: Array<{ translated: number; total: number }> = []
+    const result = await translateFile({
+      input,
+      locale: 'pl_PL',
+      apiKey: 'test-key',
+      batchSize: 1,
+      onProgress: ({ translated, total }) => progress.push({ translated, total }),
+    })
+
+    expect(generateObject).toHaveBeenCalledTimes(3)
+    expect(progress).toEqual([
+      { translated: 0, total: 1 },
+      { translated: 0, total: 1 },
+      { translated: 1, total: 1 },
+    ])
+    expect(result).toMatchObject({
+      translated: 1,
+      skipped: 0,
+      usage: { promptTokens: 300, completionTokens: 150, totalTokens: 450 },
+    })
+    expect(loadPO(result.output).entries[0].msgstrs).toEqual([
+      'Jeden plik',
+      'Pliki',
+      'Wiele plików',
+    ])
+  })
+
+  it('translates only missing required plural slots and preserves completed forms', async () => {
+    const input = join(tmpDir, 'partial-plural.po')
+    writeFileSync(input, PARTIAL_THREE_FORM_PLURAL_PO)
+    mockAI([['Pliki']])
+
+    const result = await translateFile({
+      input,
+      locale: 'pl_PL',
+      apiKey: 'test-key',
+    })
+
+    const request = vi.mocked(generateObject).mock.calls[0][0]
+    expect(JSON.parse(request.messages![1].content as string)).toEqual([
+      {
+        template: 'Many files',
+        singularSource: 'One file',
+        pluralSource: 'Many files',
+        formIndex: 1,
+        formCount: 3,
+        msgctxt: 'storage',
+      },
+    ])
+    expect(result).toMatchObject({ translated: 1, skipped: 0 })
+    expect(loadPO(result.output).entries[0].msgstrs).toEqual([
+      'Jeden plik',
+      'Pliki',
+      'Wiele plików',
+    ])
+  })
+
+  it('replaces every required plural slot when onlyMissing is false', async () => {
+    const input = join(tmpDir, 'partial-plural.po')
+    writeFileSync(input, PARTIAL_THREE_FORM_PLURAL_PO)
+    mockAI([['Nowy jeden plik', 'Nowe pliki', 'Nowych plików']])
+
+    const result = await translateFile({
+      input,
+      locale: 'pl_PL',
+      apiKey: 'test-key',
+      onlyMissing: false,
+    })
+
+    expect(result).toMatchObject({ translated: 1, skipped: 0 })
+    expect(loadPO(result.output).entries[0].msgstrs).toEqual([
+      'Nowy jeden plik',
+      'Nowe pliki',
+      'Nowych plików',
+    ])
+  })
+
+  it('rejects a plural response count mismatch before applying or saving the batch', async () => {
+    const input = join(tmpDir, 'messages-nl_NL.po')
+    writeFileSync(input, TWO_FORM_PLURAL_PO)
+    mockAI([['Eén item']])
+
+    await expect(translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })).rejects.toThrow('AI returned 1 translations for 2 inputs')
+
+    expect(loadPO(input).entries[0].msgstrs).toEqual(['', ''])
   })
 
   it('skips already-translated entries when onlyMissing is true (default)', async () => {

@@ -15,9 +15,9 @@ export interface TranslateOptions {
   apiKey?: string
   /** Extra context about the project sent to the AI */
   context?: string
-  /** Number of strings to translate per AI request. Defaults to 40 */
+  /** Number of translation jobs per AI request. Defaults to 40 */
   batchSize?: number
-  /** Only translate empty msgstr entries, skip already-translated. Defaults to true */
+  /** Only translate required empty msgstr slots; preserve completed slots. Defaults to true */
   onlyMissing?: boolean
   /** Called after each batch with progress info */
   onProgress?: (progress: Progress) => void
@@ -25,7 +25,9 @@ export interface TranslateOptions {
 
 export interface Progress {
   locale: string
+  /** Catalog entries whose selected translation jobs have all completed. */
   translated: number
+  /** Catalog entries selected for translation, not internal plural-form jobs. */
   total: number
   batch: number
   batches: number
@@ -42,7 +44,9 @@ export interface TokenUsage {
 export interface TranslateResult {
   locale: string
   output: string
+  /** Catalog entries translated, not internal plural-form jobs. */
   translated: number
+  /** Catalog entries with no translation jobs selected. */
   skipped: number
   usage: TokenUsage
 }

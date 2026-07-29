@@ -4,7 +4,8 @@ import { z } from 'zod'
 import { existsSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { extractVariables, restoreVariables } from './variables.js'
-import { loadPO, localeToLanguageName } from './po.js'
+import { loadPO, localeMetadataFor, localeToLanguageName } from './po.js'
+import type { POEntry } from './po.js'
 import { loadReadme } from './readme.js'
 import type { ReadmeSegment } from './readme.js'
 import type { TranslateOptions, TranslateResult, TokenUsage } from './types.js'
@@ -48,7 +49,18 @@ const translationsSchema = z.object({
 
 interface TranslationRequestItem {
   template: string
+  singularSource?: string
+  pluralSource?: string
+  formIndex?: number
+  formCount?: number
   msgctxt?: string
+}
+
+interface TranslationJob {
+  entry: POEntry
+  formIndex: number
+  extracted: ReturnType<typeof extractVariables>
+  requestItem: TranslationRequestItem
 }
 
 function buildSystemPrompt(targetLanguage: string, context?: string): string {
@@ -63,6 +75,8 @@ Rules:
 - Keep HTML tags unchanged
 - Match the tone: concise for labels/buttons, natural for descriptions
 - The optional msgctxt field is metadata for disambiguation; never include it in a translation
+- Plural items include singularSource, pluralSource, formIndex, and formCount as metadata
+- Translate only the template field, choosing wording appropriate for the specified plural form
 - Do not add or remove punctuation unless required by the target language
 - Return ONLY the translated strings array — no explanations`
 }
@@ -338,13 +352,42 @@ export async function translateFile(
   const outputPath = resolveOutputPath(input, locale, output)
 
   const po = loadPO(input)
+  const pluralFormCount = localeMetadataFor(locale).pluralFormCount
   po.setLocale(locale)
 
-  const toTranslate = onlyMissing
-    ? po.entries.filter((e) => !e.msgstr)
-    : po.entries
+  const translationJobs: TranslationJob[] = []
+  const selectedEntries = new Set<POEntry>()
 
-  const total = toTranslate.length
+  for (const entry of po.entries) {
+    const singularExtracted = extractVariables(entry.msgid)
+    const pluralExtracted = entry.msgid_plural
+      ? extractVariables(entry.msgid_plural)
+      : undefined
+    const formCount = pluralExtracted ? pluralFormCount : 1
+
+    for (let formIndex = 0; formIndex < formCount; formIndex++) {
+      if (onlyMissing && entry.msgstrs[formIndex]) continue
+
+      const extracted = formIndex === 0 ? singularExtracted : pluralExtracted!
+      const requestItem: TranslationRequestItem = {
+        template: extracted.template,
+        ...(pluralExtracted
+          ? {
+              singularSource: singularExtracted.template,
+              pluralSource: pluralExtracted.template,
+              formIndex,
+              formCount,
+            }
+          : {}),
+        ...(entry.msgctxt ? { msgctxt: entry.msgctxt } : {}),
+      }
+
+      translationJobs.push({ entry, formIndex, extracted, requestItem })
+      selectedEntries.add(entry)
+    }
+  }
+
+  const total = selectedEntries.size
   const skipped = po.entries.length - total
 
   const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
@@ -354,27 +397,25 @@ export async function translateFile(
     return { locale, output: outputPath, translated: 0, skipped, usage: emptyUsage }
   }
 
-  // Extract variables and build templates for each entry
-  const extracted = toTranslate.map((entry) => extractVariables(entry.msgid))
-
-  // Split into batches
+  // Split translation jobs into batches.
   const batches: number[][] = []
-  for (let i = 0; i < extracted.length; i += batchSize) {
+  for (let i = 0; i < translationJobs.length; i += batchSize) {
     batches.push(
-      Array.from({ length: Math.min(batchSize, extracted.length - i) }, (_, j) => i + j),
+      Array.from({ length: Math.min(batchSize, translationJobs.length - i) }, (_, j) => i + j),
     )
   }
 
   let translated = 0
   let promptTokens = 0
   let completionTokens = 0
+  const remainingJobs = new Map<POEntry, number>()
+  for (const job of translationJobs) {
+    remainingJobs.set(job.entry, (remainingJobs.get(job.entry) ?? 0) + 1)
+  }
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
     const indices = batches[batchIndex]
-    const items = indices.map((i) => ({
-      template: extracted[i].template,
-      ...(toTranslate[i].msgctxt ? { msgctxt: toTranslate[i].msgctxt } : {}),
-    }))
+    const items = indices.map((i) => translationJobs[i].requestItem)
 
     const result = await translateBatch(items, targetLanguage, model, context)
 
@@ -382,10 +423,13 @@ export async function translateFile(
     completionTokens += result.completionTokens
 
     for (let j = 0; j < indices.length; j++) {
-      const entryIndex = indices[j]
-      const restored = restoreVariables(result.translations[j], extracted[entryIndex].vars)
-      toTranslate[entryIndex]._item.msgstr = [restored]
-      translated++
+      const job = translationJobs[indices[j]]
+      const restored = restoreVariables(result.translations[j], job.extracted.vars)
+      job.entry.msgstrs[job.formIndex] = restored
+
+      const remaining = (remainingJobs.get(job.entry) ?? 1) - 1
+      remainingJobs.set(job.entry, remaining)
+      if (remaining === 0) translated++
     }
 
     onProgress?.({
