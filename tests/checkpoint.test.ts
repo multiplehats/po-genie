@@ -98,6 +98,24 @@ describe('translation checkpoints', () => {
     })
   })
 
+  it('rejects infinite estimated cost before writing any checkpoint bytes', () => {
+    const infiniteCostState: CheckpointResumeState = {
+      ...RESUME_STATE,
+      usage: {
+        ...RESUME_STATE.usage,
+        estimatedCostUsd: Number.POSITIVE_INFINITY,
+      },
+    }
+
+    expect(() => saveCheckpoint(outputPath, createIdentity(), infiniteCostState)).toThrow(
+      /estimatedCostUsd.*finite/i,
+    )
+    expect(existsSync(checkpointPathForOutput(outputPath))).toBe(false)
+
+    saveCheckpoint(outputPath, createIdentity(), RESUME_STATE)
+    expect(loadCheckpoint(outputPath, createIdentity())).toEqual(RESUME_STATE)
+  })
+
   it.each([
     ['sourceSha256', { source: 'new source bytes' }],
     ['targetLocale', { targetLocale: 'de_DE' }],

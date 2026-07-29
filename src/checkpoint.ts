@@ -57,7 +57,7 @@ const checkpointUsageSchema = z.object({
   promptTokens: z.number().int().nonnegative(),
   completionTokens: z.number().int().nonnegative(),
   totalTokens: z.number().int().nonnegative(),
-  estimatedCostUsd: z.number().nonnegative().optional(),
+  estimatedCostUsd: z.number().finite().nonnegative().optional(),
 }).strict().superRefine((usage, context) => {
   if (usage.totalTokens !== usage.promptTokens + usage.completionTokens) {
     context.addIssue({
