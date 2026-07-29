@@ -121,7 +121,7 @@ function normalizeLocales(locale: TranslateOptions['locale']): string[] {
   const values = Array.isArray(locale) ? locale : [locale]
   if (values.length === 0) throw new Error('At least one locale is required')
 
-  const seen = new Set<string>()
+  const seen = new Map<string, string>()
   const locales: string[] = []
 
   for (const value of values) {
@@ -131,17 +131,11 @@ function normalizeLocales(locale: TranslateOptions['locale']): string[] {
       throw new Error(`Invalid locale: ${value}`)
     }
 
-    let canonical: string
-    try {
-      canonical = Intl.getCanonicalLocales(trimmed.replaceAll('_', '-'))[0].replaceAll('-', '_')
-    } catch {
-      throw new Error(`Invalid locale: ${value}`)
-    }
-
-    const collisionKey = canonical.toLowerCase()
-    if (seen.has(collisionKey)) throw new Error(`Duplicate locale: ${canonical}`)
-    seen.add(collisionKey)
-    locales.push(canonical)
+    const collisionKey = trimmed.replaceAll('-', '_').toLowerCase()
+    const duplicate = seen.get(collisionKey)
+    if (duplicate) throw new Error(`Duplicate locale: ${duplicate}`)
+    seen.set(collisionKey, trimmed)
+    locales.push(trimmed)
   }
 
   return locales

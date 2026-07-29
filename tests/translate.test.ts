@@ -318,6 +318,22 @@ describe('translate with multiple locales', () => {
     expect(readFileSync(output, 'utf-8')).toContain('msgstr "Opslaan"')
   })
 
+  it.each([
+    ['pt_PT_ao90', 'pt_PT_ao90'],
+    ['en_US_POSIX', 'en_US_POSIX'],
+  ])('preserves the safe gettext locale %s in results and filenames', async (locale, expectedLocale) => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+    mockAI([['Opslaan', 'Annuleren', 'Fout']])
+
+    const [result] = await translate({ input, locale, apiKey: 'test-key' })
+
+    expect(result.locale).toBe(expectedLocale)
+    expect(result.output).toBe(join(tmpDir, `messages-${expectedLocale}.po`))
+    expect(readFileSync(result.output, 'utf-8')).toContain('msgstr "Opslaan"')
+    expect(vi.mocked(generateObject).mock.calls[0][0].messages?.[0].content).toContain(expectedLocale)
+  })
+
   it('rejects duplicate normalized locales before requesting translations', async () => {
     const input = join(tmpDir, 'messages.pot')
     writeFileSync(input, UNTRANSLATED_PO)
