@@ -1,7 +1,7 @@
 {
   "name": "po-genie",
   "version": "0.2.0",
-  "description": "AI-powered .po file translator with variable detection",
+  "description": "AI-powered gettext PO/POT and WordPress readme.txt translator",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
