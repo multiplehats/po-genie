@@ -170,6 +170,8 @@ function buildReadmeSystemPrompt(targetLanguage: string): string {
 
 Rules:
 - Translate the text naturally and accurately
+- Each input item has translatable "text" and optional non-translatable "context" metadata
+- Translate only the "text" field; use "context" solely to choose appropriate wording
 - Preserve all markdown formatting (bold, italic, links, lists)
 - Keep URLs unchanged — do not translate URLs
 - Keep code references unchanged (e.g. file paths, function names, CSS classes)
@@ -219,10 +221,11 @@ async function translateReadmeFile(
   // Extract variables and build templates for each segment
   const extracted = translatableSegments.map((seg) => extractVariables(seg.content))
 
-  // Prepend context hints to templates for the AI
-  const templatesWithContext = translatableSegments.map((seg, i) => {
-    const ctx = seg.context
-    return ctx ? `[context: ${ctx}] ${extracted[i].template}` : extracted[i].template
+  const itemsWithContext = translatableSegments.map((seg, i) => {
+    const context = seg.context
+    return context
+      ? { text: extracted[i].template, context }
+      : { text: extracted[i].template }
   })
 
   // Split into batches
@@ -242,7 +245,7 @@ async function translateReadmeFile(
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
     const indices = batches[batchIndex]
-    const templates = indices.map((i) => templatesWithContext[i])
+    const items = indices.map((i) => itemsWithContext[i])
 
     const { object, usage } = await generateObject({
       model,
@@ -250,13 +253,13 @@ async function translateReadmeFile(
       schema: translationsSchema,
       messages: [
         { role: 'system', content: systemPrompt + contextLine },
-        { role: 'user', content: JSON.stringify(templates) },
+        { role: 'user', content: JSON.stringify(items) },
       ],
     })
 
-    if (object.translations.length !== templates.length) {
+    if (object.translations.length !== items.length) {
       throw new Error(
-        `AI returned ${object.translations.length} translations for ${templates.length} inputs`,
+        `AI returned ${object.translations.length} translations for ${items.length} inputs`,
       )
     }
 

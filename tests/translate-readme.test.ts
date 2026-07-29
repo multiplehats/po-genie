@@ -7,6 +7,14 @@ import { loadReadme } from '../src/readme.js'
 // ---------------------------------------------------------------------------
 // Mock the AI SDK — we don't want real API calls in unit tests
 // ---------------------------------------------------------------------------
+vi.mock('../src/readme.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/readme.js')>()
+  return {
+    ...actual,
+    loadReadme: vi.fn(actual.loadReadme),
+  }
+})
+
 vi.mock('@openrouter/ai-sdk-provider', () => ({
   createOpenRouter: vi.fn(() => ({
     chat: vi.fn(() => 'mock-model'),
@@ -161,6 +169,58 @@ describe('translateFile with readme', () => {
     expect(saved).toContain('%s')
     expect(saved).toContain('%1$s')
     expect(saved).toContain('%2$d')
+  })
+
+  it('sends readme context as metadata without modifying translated text', async () => {
+    const content = [
+      '=== Context Plugin ===',
+      'Contributors: test',
+      '',
+      'A [legitimate] short description.',
+      '',
+      '== Frequently Asked Questions ==',
+      '',
+      '= Can I keep [brackets]? =',
+      '',
+      'Yes, [legitimate] bracket text remains visible.',
+      '',
+    ].join('\n')
+    const input = join(tmpDir, 'readme.txt')
+    writeFileSync(input, content)
+    const originalLoadReadme = vi.mocked(loadReadme).getMockImplementation()
+    if (!originalLoadReadme) throw new Error('Expected loadReadme mock implementation')
+    vi.mocked(loadReadme).mockImplementationOnce((filePath) => {
+      const readme = originalLoadReadme(filePath)
+      const faqQuestion = readme.segments.find((segment) => segment.content === 'Can I keep [brackets]?')
+      if (faqQuestion) delete faqQuestion.context
+      return readme
+    })
+    mockAI([[
+      'Een [legitimate] korte beschrijving.',
+      'Kan ik [brackets] behouden?',
+      'Ja, [legitimate] tekst tussen haakjes blijft zichtbaar.',
+    ]])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    const request = vi.mocked(generateObject).mock.calls[0][0] as any
+    const userMessage = request.messages.find((message: { role: string }) => message.role === 'user')
+    const items = JSON.parse(userMessage.content)
+
+    expect(items).toEqual([
+      { text: 'A [legitimate] short description.', context: 'short description' },
+      { text: 'Can I keep [brackets]?' },
+      { text: 'Yes, [legitimate] bracket text remains visible.', context: 'faq answer' },
+    ])
+
+    const saved = readFileSync(result.output, 'utf-8')
+    expect(saved).toContain('Een [legitimate] korte beschrijving.')
+    expect(saved).toContain('Ja, [legitimate] tekst tussen haakjes blijft zichtbaar.')
+    expect(saved).not.toContain('[context:')
   })
 
   it('all translatable segments have translated content in output', async () => {
