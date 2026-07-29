@@ -121,12 +121,14 @@ describe('loadPO', () => {
     expect(files!.msgstr).toBe('Bestand aangepast')
     expect(Reflect.set(files!, 'msgstr', 'Bestand via compatibility')).toBe(true)
     expect(files!.msgstrs[0]).toBe('Bestand via compatibility')
+    files!.msgstrs = ['Bestand vervangen', 'Bestanden vervangen']
+    expect(files!.msgstr).toBe('Bestand vervangen')
     po.save(out)
 
     const saved = gettextParser.po.parse(readFileSync(out))
     expect(saved.translations['']?.File?.msgstr).toEqual([
-      'Bestand via compatibility',
-      'Bestanden aangepast',
+      'Bestand vervangen',
+      'Bestanden vervangen',
     ])
   })
 

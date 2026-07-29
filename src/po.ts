@@ -213,7 +213,12 @@ export function loadPO(filePath: string): POFile {
         set msgstr(value) {
           item.msgstr[0] = value
         },
-        msgstrs: item.msgstr,
+        get msgstrs() {
+          return item.msgstr
+        },
+        set msgstrs(value) {
+          item.msgstr = value
+        },
         _item: item,
       })
     }
