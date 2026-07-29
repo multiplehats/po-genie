@@ -1,5 +1,6 @@
 import gettextParser from 'gettext-parser'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { writeFileAtomically } from './atomic-write.js'
 
 export interface POEntry {
   msgid: string
@@ -233,7 +234,7 @@ export function loadPO(filePath: string): POFile {
     },
     save(outputPath) {
       const output = gettextParser.po.compile(parsed)
-      writeFileSync(outputPath, output)
+      writeFileAtomically(outputPath, output)
     },
   }
 }

@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import gettextParser from 'gettext-parser'
 import { loadPO, localeMetadataFor, localeToLanguageName } from '../src/po.js'
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+  }
+})
 
 const SIMPLE_PO = `
 msgid ""
@@ -160,6 +168,50 @@ describe('loadPO', () => {
     expect(saved).toContain('msgstr "Annuleren"')
     // Previously translated strings must be preserved
     expect(saved).toContain('msgstr "Instellingen opslaan"')
+  })
+
+  it('replaces an existing PO destination with compiled bytes', () => {
+    const file = join(tmpDir, 'input.po')
+    const out = join(tmpDir, 'output.po')
+    writeFileSync(file, SIMPLE_PO)
+    writeFileSync(out, Buffer.from([0, 1, 2, 3]))
+
+    const po = loadPO(file)
+    po.entries.find((entry) => entry.msgid === 'Cancel')!._item.msgstr = ['Annuleren']
+    po.save(out)
+
+    expect(readFileSync(out, 'utf-8')).toContain('msgstr "Annuleren"')
+  })
+
+  it('keeps the existing PO bytes and removes its sibling temporary file when writing fails', async () => {
+    const file = join(tmpDir, 'input.po')
+    const out = join(tmpDir, 'output.po')
+    const original = Buffer.from([0, 1, 2, 255])
+    writeFileSync(file, SIMPLE_PO)
+    writeFileSync(out, original)
+
+    const po = loadPO(file)
+    po.entries.find((entry) => entry.msgid === 'Cancel')!._item.msgstr = ['Annuleren']
+
+    const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs')
+    const write = vi.mocked(writeFileSync)
+    const previousImplementation = write.getMockImplementation()
+    write.mockImplementation((path, data, options) => {
+      if (typeof path === 'string' && dirname(path) === tmpDir && path !== out) {
+        actualFs.writeFileSync(path, Buffer.from('partial'))
+        throw new Error('injected write failure')
+      }
+      return actualFs.writeFileSync(path, data, options)
+    })
+
+    try {
+      expect(() => po.save(out)).toThrow('injected write failure')
+    } finally {
+      write.mockImplementation(previousImplementation!)
+    }
+
+    expect(readFileSync(out)).toEqual(original)
+    expect(readdirSync(tmpDir).sort()).toEqual(['input.po', 'output.po'])
   })
 
   it('throws for a non-existent file', () => {

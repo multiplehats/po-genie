@@ -1,7 +1,16 @@
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { describe, it, expect, vi } from 'vitest'
+import { mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { loadReadme } from '../src/readme.js'
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    renameSync: vi.fn(actual.renameSync),
+  }
+})
 
 const FIXTURE = join(import.meta.dirname, 'fixtures', 'readme.txt')
 
@@ -157,6 +166,51 @@ describe('loadReadme', () => {
     const serialized = readFileSync(outFile, 'utf-8')
     expect(serialized).toBe(original)
 
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('replaces an existing readme destination with serialized UTF-8 text', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'readme-test-'))
+    const outFile = join(tmpDir, 'readme.txt')
+    writeFileSync(outFile, Buffer.from([0, 1, 2, 3]))
+
+    const readme = loadReadme(FIXTURE)
+    readme.save(outFile)
+
+    expect(readFileSync(outFile, 'utf-8')).toContain('=== Test Plugin ===')
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('keeps the existing readme bytes and removes its sibling temporary file when renaming fails', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'readme-test-'))
+    const outFile = join(tmpDir, 'readme.txt')
+    const original = Buffer.from([0, 1, 2, 255])
+    writeFileSync(outFile, original)
+
+    const readme = loadReadme(FIXTURE)
+    const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs')
+    const rename = vi.mocked(renameSync)
+    const previousImplementation = rename.getMockImplementation()
+    rename.mockImplementation((oldPath, newPath) => {
+      if (
+        typeof oldPath === 'string' &&
+        typeof newPath === 'string' &&
+        dirname(oldPath) === tmpDir &&
+        newPath === outFile
+      ) {
+        throw new Error('injected rename failure')
+      }
+      return actualFs.renameSync(oldPath, newPath)
+    })
+
+    try {
+      expect(() => readme.save(outFile)).toThrow('injected rename failure')
+    } finally {
+      rename.mockImplementation(previousImplementation!)
+    }
+
+    expect(readFileSync(outFile)).toEqual(original)
+    expect(readdirSync(tmpDir)).toEqual(['readme.txt'])
     rmSync(tmpDir, { recursive: true, force: true })
   })
 

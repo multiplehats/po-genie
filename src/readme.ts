@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { writeFileAtomically } from './atomic-write.js'
 
 export interface ReadmeSegment {
   type: 'passthrough' | 'translatable'
@@ -241,7 +242,7 @@ export function loadReadme(filePath: string): ReadmeFile {
   return {
     segments,
     save(filePath: string) {
-      writeFileSync(filePath, serialize(), 'utf-8')
+      writeFileAtomically(filePath, serialize(), 'utf-8')
     },
   }
 }
