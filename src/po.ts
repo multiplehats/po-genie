@@ -21,7 +21,27 @@ function normalizeLocale(locale: string): string {
   try {
     return new Intl.Locale(locale.replaceAll('_', '-')).baseName.replaceAll('-', '_')
   } catch {
-    throw new Error(`Invalid locale "${locale}"`)
+    const parts = locale.replaceAll('-', '_').split('_')
+    if (
+      !/^[A-Za-z]{2,3}$/.test(parts[0] ?? '') ||
+      parts.slice(1).some((part) => !/^[A-Za-z0-9]{2,8}$/.test(part))
+    ) {
+      throw new Error(`Invalid locale "${locale}"`)
+    }
+
+    return parts.map((part, index) => {
+      if (index === 0) return part.toLowerCase()
+      if (index === 1 && /^[A-Za-z]{4}$/.test(part)) {
+        return part[0].toUpperCase() + part.slice(1).toLowerCase()
+      }
+      if (
+        (index === 1 || (index === 2 && /^[A-Za-z]{4}$/.test(parts[1])))
+        && /^(?:[A-Za-z]{2}|\d{3})$/.test(part)
+      ) {
+        return part.toUpperCase()
+      }
+      return part.toLowerCase()
+    }).join('_')
   }
 }
 
@@ -109,13 +129,18 @@ const GNU_GETTEXT_PLURAL_GROUPS = [
 const GNU_GETTEXT_PLURAL_FORMS: Readonly<Record<string, string>> = Object.freeze(
   Object.fromEntries(
     GNU_GETTEXT_PLURAL_GROUPS.flatMap(([formula, locales]) =>
-      locales.trim().split(/\s+/).map((locale) => [locale, formula]),
+      locales.trim().split(/\s+/).map((locale) => [normalizeLocale(locale), formula]),
     ),
   ),
 )
 
 function pluralFormsForLocale(locale: string): string {
-  const sourceHeader = GNU_GETTEXT_PLURAL_FORMS[locale]
+  let ruleLocale = locale
+  let sourceHeader = GNU_GETTEXT_PLURAL_FORMS[ruleLocale]
+  while (!sourceHeader && ruleLocale.includes('_')) {
+    ruleLocale = ruleLocale.slice(0, ruleLocale.lastIndexOf('_'))
+    sourceHeader = GNU_GETTEXT_PLURAL_FORMS[ruleLocale]
+  }
   if (!sourceHeader) {
     throw new Error(`Unsupported gettext plural rules for locale "${locale}"`)
   }
@@ -177,8 +202,13 @@ export function loadPO(filePath: string): POFile {
 /** Resolve a language name from a locale code using the native Intl API */
 export function localeToLanguageName(locale: string): string {
   try {
-    const bcp47 = normalizeLocale(locale).replaceAll('_', '-')
-    return new Intl.DisplayNames(['en'], { type: 'language' }).of(bcp47) ?? locale
+    const normalizedLocale = normalizeLocale(locale)
+    const bcp47 = normalizedLocale.replaceAll('_', '-')
+    const languageName = new Intl.DisplayNames(['en'], { type: 'language' }).of(bcp47)
+    if (!languageName) return locale
+    return normalizedLocale.split('_').length > 2
+      ? `${languageName} (${locale})`
+      : languageName
   } catch {
     return locale
   }

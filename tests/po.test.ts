@@ -195,6 +195,32 @@ describe('loadPO', () => {
     }
   })
 
+  it.each([
+    ['el_POLYTON', 'el_polyton', 'nplurals=2; plural=(n != 1);'],
+    ['ca_ES_VALENCIA', 'ca_ES_valencia', 'nplurals=2; plural=(n != 1);'],
+    [
+      'be_TARASK',
+      'be_tarask',
+      'nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);',
+    ],
+    ['en_US_POSIX', 'en_US_u_va_posix', 'nplurals=2; plural=(n != 1);'],
+  ])(
+    'resolves the canonical gettext variant %s',
+    (locale, normalizedLocale, pluralForms) => {
+      const file = join(tmpDir, `messages-${locale}.pot`)
+      const out = join(tmpDir, `messages-${locale}.po`)
+      writeFileSync(file, POT_WITH_EMPTY_LANGUAGE)
+
+      const po = loadPO(file)
+      po.setLocale(locale)
+      po.save(out)
+
+      const headers = readHeaders(out)
+      expect(headers.Language).toBe(normalizedLocale)
+      expect(headers['Plural-Forms']).toBe(pluralForms)
+    },
+  )
+
   it('rejects unsupported locales before an output file can be replaced', () => {
     const file = join(tmpDir, 'messages.pot')
     const out = join(tmpDir, 'messages-xx_XX.po')
