@@ -18,7 +18,7 @@ validates every translated batch before accepting it.
 - Resumes interrupted work from safe, identity-checked checkpoints
 - Writes final outputs and checkpoints atomically
 - Runs multiple target locales with configurable bounded concurrency
-- Provides token usage and optional cost estimates through the API and CLI
+- Returns known token usage and optional cost estimates through the API
 
 ## Quick start
 
@@ -130,7 +130,8 @@ npx po-genie -i languages/my-plugin.pot -l nl_NL,de_DE,fr_FR \
   -c "WordPress plugin for [what your plugin does]"
 ```
 
-This generates `languages/my-plugin-nl_NL.po`, `my-plugin-de_DE.po`, etc.
+This generates `languages/my-plugin-nl_NL.po`,
+`languages/my-plugin-de_DE.po`, and `languages/my-plugin-fr_FR.po`.
 
 **4. Translate the plugin readme, if present:**
 
@@ -163,7 +164,12 @@ wp i18n make-mo languages/
 pnpm i18n && pnpm i18n:translate && pnpm i18n:compile
 ```
 
-> **Re-running is safe.** po-genie only fills in `msgstr ""` entries. Already-translated strings are never touched. Run it again whenever you add new strings.
+> **In-place PO updates are safe by default.** When the input is an already
+> locale-suffixed `.po` written back in place, the default `onlyMissing: true`
+> preserves completed translation slots and fills only required empty slots.
+> Re-running a `.pot` or `readme.txt` translation regenerates its target output
+> and can make new provider requests with additional cost. Matching
+> checkpoints separately resume validated work from an interrupted run.
 
 ## Programmatic API
 
@@ -234,8 +240,15 @@ translatable segments and `skipped` is always zero. Resumed work is included
 in `translated` and `usage`; unavailable usage from failed provider attempts
 cannot be included.
 
-With multiple locales, `translate()` either returns all results in requested
-order or throws `LocaleTranslationError` after every started job settles:
+Every API result includes known token usage. `estimatedCostUsd` is optional.
+The CLI prints aggregate token totals when multiple locale results are
+returned or when at least one known cost estimate is available; it displays
+cost only when an estimate is known.
+
+If any locale job fails, `translate()` throws `LocaleTranslationError` after
+every started job settles, including when only one locale was requested. For
+multiple locales, the error separates completed partial results, failed
+locales, and locales that were not started:
 
 ```ts
 import { LocaleTranslationError, translate } from 'po-genie'
@@ -290,10 +303,11 @@ The following patterns are detected, tokenised before translation, and restored 
 ## Models and cost estimates
 
 Pass any model ID supported by your OpenRouter account. Token counts are
-reported for successful provider responses. `estimatedCostUsd` is included
-only for model IDs in po-genie's built-in price table; it is an estimate, not
-a billing guarantee. Model availability and pricing change, so use
-OpenRouter's current model page and your provider bill as the authority.
+included in API results for successful provider responses.
+`estimatedCostUsd` is included only for model IDs in po-genie's built-in price
+table; it is an estimate, not a billing guarantee. Model availability and
+pricing change, so use OpenRouter's current model page and your provider bill
+as the authority.
 
 ## License
 
