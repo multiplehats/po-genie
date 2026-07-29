@@ -26,6 +26,12 @@ vi.mock('ai', () => ({
 }))
 
 import { generateObject } from 'ai'
+import { createOpenRouter } from '@openrouter/ai-sdk-provider'
+import {
+  checkpointPathForOutput,
+  createCheckpointIdentity,
+  saveCheckpoint,
+} from '../src/checkpoint.js'
 import { translate, translateFile } from '../src/translate.js'
 
 const README_FIXTURE = join(import.meta.dirname, 'fixtures', 'readme.txt')
@@ -74,6 +80,273 @@ function fixtureTranslations(prefix: string): string[] {
 }
 
 describe('translateFile with readme', () => {
+  it('checkpoints a validated readme batch and resumes without requesting it twice', async () => {
+    const content = [
+      '=== Resume Plugin ===',
+      'Contributors: test',
+      '',
+      'First segment.',
+      '',
+      '== Description ==',
+      '',
+      'Second segment.',
+      '',
+      'Third segment.',
+      '',
+    ].join('\n')
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, content)
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Eerste segment.'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockRejectedValueOnce(Object.assign(new Error('bad request'), {
+        statusCode: 400,
+      }))
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'sk-never-persist',
+      context: 'private readme context',
+      batchSize: 1,
+    })).rejects.toThrow('bad request')
+
+    const checkpointPath = checkpointPathForOutput(output)
+    const serialized = readFileSync(checkpointPath, 'utf8')
+    const checkpoint = JSON.parse(serialized)
+    expect(checkpoint.completedItemIds).toHaveLength(1)
+    expect(Object.values(checkpoint.translations)).toEqual(['Eerste segment.'])
+    expect(checkpoint.usage).toMatchObject({
+      promptTokens: 100,
+      completionTokens: 50,
+      totalTokens: 150,
+    })
+    expect(serialized).not.toContain('sk-never-persist')
+    expect(serialized).not.toContain('private readme context')
+    expect(serialized).not.toContain('First segment.')
+    expect(serialized).not.toContain('translating a WordPress plugin readme')
+
+    vi.mocked(generateObject).mockReset()
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Tweede segment.'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockResolvedValueOnce({
+        object: { translations: ['Derde segment.'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+    const progress: number[] = []
+
+    const result = await translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'sk-never-persist',
+      context: 'private readme context',
+      batchSize: 1,
+      onProgress: ({ translated }) => progress.push(translated),
+    })
+
+    expect(generateObject).toHaveBeenCalledTimes(2)
+    expect(progress).toEqual([2, 3])
+    expect(result).toMatchObject({
+      translated: 3,
+      skipped: 0,
+      usage: { promptTokens: 300, completionTokens: 150, totalTokens: 450 },
+    })
+    const saved = readFileSync(output, 'utf8')
+    expect(saved).toContain('Eerste segment.')
+    expect(saved).toContain('Tweede segment.')
+    expect(saved).toContain('Derde segment.')
+    expect(saved).not.toContain('First segment.')
+    expect(existsSync(checkpointPath)).toBe(false)
+  })
+
+  it.each([
+    {
+      case: 'stale source',
+      prepare(input: string, output: string) {
+        saveCheckpoint(output, createCheckpointIdentity({
+          source: readFileSync(input),
+          targetLocale: 'nl_NL',
+          pipeline: 'readme',
+          model: 'anthropic/claude-3.5-haiku',
+          batchSize: 1,
+          onlyMissing: true,
+        }), {
+          completedItemIds: [],
+          translations: {},
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        })
+        writeFileSync(input, `${readFileSync(input, 'utf8')}\nChanged source.`)
+      },
+      error: /identity mismatch.*sourceSha256/i,
+    },
+    {
+      case: 'corrupt JSON',
+      prepare(_input: string, output: string) {
+        writeFileSync(checkpointPathForOutput(output), '{"schemaVersion":1,broken')
+      },
+      error: /corrupt JSON/i,
+    },
+    {
+      case: 'option mismatch',
+      prepare(input: string, output: string) {
+        saveCheckpoint(output, createCheckpointIdentity({
+          source: readFileSync(input),
+          targetLocale: 'nl_NL',
+          pipeline: 'readme',
+          model: 'anthropic/claude-3.5-haiku',
+          batchSize: 2,
+          onlyMissing: true,
+        }), {
+          completedItemIds: [],
+          translations: {},
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        })
+      },
+      error: /identity mismatch.*batchSize/i,
+    },
+    {
+      case: 'unknown completed item',
+      prepare(input: string, output: string) {
+        saveCheckpoint(output, createCheckpointIdentity({
+          source: readFileSync(input),
+          targetLocale: 'nl_NL',
+          pipeline: 'readme',
+          model: 'anthropic/claude-3.5-haiku',
+          batchSize: 1,
+          onlyMissing: true,
+        }), {
+          completedItemIds: ['readme:not-a-selected-job'],
+          translations: { 'readme:not-a-selected-job': 'Onbekend' },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        })
+      },
+      error: /does not match the selected readme jobs/i,
+    },
+  ])('rejects a $case checkpoint before creating the readme provider', async ({ prepare, error }) => {
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, [
+      '=== Checkpoint Plugin ===',
+      'Contributors: test',
+      '',
+      'Translate this segment.',
+      '',
+    ].join('\n'))
+    writeFileSync(output, 'existing output bytes')
+    prepare(input, output)
+    const checkpointPath = checkpointPathForOutput(output)
+    const checkpointBytes = readFileSync(checkpointPath)
+    const outputBytes = readFileSync(output)
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow(error)
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(readFileSync(checkpointPath)).toEqual(checkpointBytes)
+    expect(readFileSync(output)).toEqual(outputBytes)
+  })
+
+  it('revalidates protected readme checkpoint text before applying it', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, [
+      '=== Protected Resume Plugin ===',
+      'Contributors: test',
+      '',
+      'Visit https://example.com.',
+      '',
+      '== Description ==',
+      '',
+      'Second segment.',
+      '',
+    ].join('\n'))
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Bezoek [IMM_0].'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockRejectedValueOnce(Object.assign(new Error('bad request'), {
+        statusCode: 400,
+      }))
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow('bad request')
+
+    const checkpointPath = checkpointPathForOutput(output)
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf8'))
+    checkpoint.translations[checkpoint.completedItemIds[0]] = 'Bezoek de site.'
+    writeFileSync(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`)
+    const editedBytes = readFileSync(checkpointPath)
+    vi.clearAllMocks()
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow(/invalid protected translation/i)
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(existsSync(output)).toBe(false)
+    expect(readFileSync(checkpointPath)).toEqual(editedBytes)
+  })
+
+  it('finishes a zero-job readme with a matching empty checkpoint without a provider', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, [
+      '=== Complete Plugin ===',
+      'Contributors: test',
+      'Stable tag: 1.0.0',
+      '',
+    ].join('\n'))
+    saveCheckpoint(output, createCheckpointIdentity({
+      source: readFileSync(input),
+      targetLocale: 'nl_NL',
+      pipeline: 'readme',
+      model: 'anthropic/claude-3.5-haiku',
+      batchSize: 40,
+      onlyMissing: true,
+    }), {
+      completedItemIds: [],
+      translations: {},
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    })
+
+    const result = await translateFile({ input, output, locale: 'nl_NL' })
+
+    expect(result).toMatchObject({
+      translated: 0,
+      skipped: 0,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    })
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(readFileSync(output, 'utf8')).toContain('=== Complete Plugin ===')
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+  })
+
   it('translates a readme and writes output', async () => {
     const input = join(tmpDir, 'readme.txt')
     writeFileSync(input, readFileSync(README_FIXTURE))
@@ -209,7 +482,9 @@ describe('translateFile with readme', () => {
       onProgress: (event) => progress.push(event.translated),
     })).rejects.toThrow(/nl_NL.*batch 1.*item 1.*IMM/)
 
+    expect(generateObject).toHaveBeenCalledTimes(1)
     expect(existsSync(output)).toBe(false)
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
     expect(progress).toEqual([])
   })
 
@@ -269,6 +544,34 @@ describe('translateFile with readme', () => {
     ).toBe(true)
   })
 
+  it('does not retry or checkpoint a readme response-count mismatch', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, [
+      '=== Count Plugin ===',
+      'Contributors: test',
+      '',
+      'First segment.',
+      '',
+      '== Description ==',
+      '',
+      'Second segment.',
+      '',
+    ].join('\n'))
+    mockAI([['Eerste segment.']])
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })).rejects.toThrow('AI returned 1 translations for 2 inputs')
+
+    expect(generateObject).toHaveBeenCalledTimes(1)
+    expect(existsSync(output)).toBe(false)
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+  })
+
   it('rejects an invented raw immutable fragment even when expected tokens are preserved', async () => {
     const content = [
       '=== Invented Fragment Plugin ===',
@@ -291,7 +594,9 @@ describe('translateFile with readme', () => {
       apiKey: 'test-key',
     })).rejects.toThrow(/unexpected raw immutable fragment/)
 
+    expect(generateObject).toHaveBeenCalledTimes(1)
     expect(existsSync(output)).toBe(false)
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
   })
 
   it('sends readme context as metadata without modifying translated text', async () => {

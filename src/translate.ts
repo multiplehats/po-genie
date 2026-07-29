@@ -1,8 +1,16 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import { generateObject } from 'ai'
 import { z } from 'zod'
-import { existsSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
+import {
+  checkpointPathForOutput,
+  createCheckpointIdentity,
+  loadCheckpoint,
+  removeCheckpoint,
+  saveCheckpoint,
+} from './checkpoint.js'
 import {
   extractProtectedFragments,
   extractVariables,
@@ -14,6 +22,7 @@ import { loadPO, localeMetadataFor, localeToLanguageName } from './po.js'
 import type { POEntry } from './po.js'
 import { loadReadme } from './readme.js'
 import type { ReadmeSegment } from './readme.js'
+import { retryTransientProviderCall } from './retry.js'
 import type { TranslateOptions, TranslateResult, TokenUsage } from './types.js'
 
 const DEFAULT_MODEL = 'anthropic/claude-3.5-haiku'
@@ -64,6 +73,7 @@ interface TranslationRequestItem {
 }
 
 interface TranslationJob {
+  id: string
   entry: POEntry
   formIndex: number
   extracted: {
@@ -71,6 +81,47 @@ interface TranslationJob {
     immutable: ReturnType<typeof extractProtectedFragments>
   }
   requestItem: TranslationRequestItem
+}
+
+interface ReadmeTranslationJob {
+  id: string
+  index: number
+  segment: ReadmeSegment & { type: 'translatable' }
+  extracted: {
+    template: string
+    vars: string[]
+    immutable: ReturnType<typeof extractProtectedFragments>
+  }
+  requestItem: {
+    text: string
+    context?: string
+  }
+}
+
+function poJobId(entry: POEntry, formIndex: number): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([
+      entry.msgctxt ?? null,
+      entry.msgid,
+      entry.msgid_plural ?? null,
+      formIndex,
+    ]))
+    .digest('hex')
+  return `po:${digest}`
+}
+
+function knownUsage(
+  modelId: string,
+  promptTokens: number,
+  completionTokens: number,
+): TokenUsage {
+  const estimatedCostUsd = estimateCost(modelId, promptTokens, completionTokens)
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
+  }
 }
 
 function normalizePluralEntries(entries: POEntry[], pluralFormCount: number): void {
@@ -108,15 +159,17 @@ async function translateBatch(
   model: ReturnType<ReturnType<typeof createOpenRouter>['chat']>,
   context?: string,
 ): Promise<{ translations: string[]; promptTokens: number; completionTokens: number }> {
-  const { object, usage } = await generateObject({
-    model,
-    maxTokens: 4096,
-    schema: translationsSchema,
-    messages: [
-      { role: 'system', content: buildSystemPrompt(targetLanguage, context) },
-      { role: 'user', content: JSON.stringify(items) },
-    ],
-  })
+  const { object, usage } = await retryTransientProviderCall(() =>
+    generateObject({
+      model,
+      maxTokens: 4096,
+      schema: translationsSchema,
+      messages: [
+        { role: 'system', content: buildSystemPrompt(targetLanguage, context) },
+        { role: 'user', content: JSON.stringify(items) },
+      ],
+    }),
+  )
 
   if (object.translations.length !== items.length) {
     throw new Error(
@@ -231,8 +284,103 @@ async function translateReadmeFile(
     apiKey,
     context,
     batchSize = DEFAULT_BATCH_SIZE,
+    onlyMissing = true,
     onProgress,
   } = options
+
+  const outputPath = resolveOutputPath(input, locale, output)
+  const sourceBytes = readFileSync(input)
+  const readme = loadReadme(input)
+  const translatableSegments = readme.segments.filter(
+    (s): s is ReadmeSegment & { type: 'translatable' } => s.type === 'translatable',
+  )
+  const total = translatableSegments.length
+  const jobs: ReadmeTranslationJob[] = translatableSegments.map((segment, index) => {
+    const variables = extractVariables(segment.content)
+    const immutable = extractProtectedFragments(variables.template)
+    const extracted = { template: immutable.template, vars: variables.vars, immutable }
+    return {
+      id: `readme:${index}`,
+      index,
+      segment,
+      extracted,
+      requestItem: segment.context
+        ? { text: extracted.template, context: segment.context }
+        : { text: extracted.template },
+    }
+  })
+
+  const checkpointIdentity = createCheckpointIdentity({
+    source: sourceBytes,
+    targetLocale: locale,
+    pipeline: 'readme',
+    model: modelId,
+    batchSize,
+    onlyMissing,
+    context,
+  })
+  const resumeState = loadCheckpoint(outputPath, checkpointIdentity)
+  const jobsById = new Map(jobs.map((job) => [job.id, job]))
+  const completedItemIds = [...(resumeState?.completedItemIds ?? [])]
+  const checkpointTranslations = { ...(resumeState?.translations ?? {}) }
+  const completedIds = new Set(completedItemIds)
+
+  const restoredResume: Array<{ job: ReadmeTranslationJob; translation: string }> = []
+  for (let completedIndex = 0; completedIndex < completedItemIds.length; completedIndex++) {
+    const id = completedItemIds[completedIndex]
+    const job = jobsById.get(id)
+    if (!job) {
+      const checkpointPath = checkpointPathForOutput(outputPath)
+      throw new Error(
+        `Checkpoint at ${checkpointPath} contains completed item ID ${id} `
+        + `that does not match the selected readme jobs. Remove ${checkpointPath} to restart this translation.`,
+      )
+    }
+    const protectedTranslation = checkpointTranslations[id]
+    try {
+      validateProtectedTokens(
+        job.extracted.template,
+        protectedTranslation,
+        { locale, batch: 0, item: completedIndex + 1 },
+      )
+    } catch (error) {
+      const checkpointPath = checkpointPathForOutput(outputPath)
+      throw new Error(
+        `Checkpoint at ${checkpointPath} contains an invalid protected translation for ${id}. `
+        + `Remove ${checkpointPath} to restart this translation.`,
+        { cause: error },
+      )
+    }
+    const immutableRestored = restoreProtectedFragments(
+      protectedTranslation,
+      job.extracted.immutable,
+    )
+    restoredResume.push({
+      job,
+      translation: restoreVariables(immutableRestored, job.extracted.vars),
+    })
+  }
+
+  for (const { job, translation } of restoredResume) {
+    job.segment.translated = translation
+  }
+
+  let translated = restoredResume.length
+  let promptTokens = resumeState?.usage.promptTokens ?? 0
+  let completionTokens = resumeState?.usage.completionTokens ?? 0
+  const pendingJobs = jobs.filter((job) => !completedIds.has(job.id))
+
+  if (pendingJobs.length === 0) {
+    readme.save(outputPath)
+    removeCheckpoint(outputPath)
+    return {
+      locale,
+      output: outputPath,
+      translated,
+      skipped: 0,
+      usage: knownUsage(modelId, promptTokens, completionTokens),
+    }
+  }
 
   const resolvedKey = apiKey ?? process.env.OPENROUTER_API_KEY
   if (!resolvedKey) {
@@ -240,67 +388,32 @@ async function translateReadmeFile(
       'OpenRouter API key is required. Set OPENROUTER_API_KEY or pass apiKey option.',
     )
   }
-
   const openrouter = createOpenRouter({ apiKey: resolvedKey })
   const model = openrouter.chat(modelId)
   const targetLanguage = localeToLanguageName(locale)
-  const outputPath = resolveOutputPath(input, locale, output)
-
-  const readme = loadReadme(input)
-  const translatableSegments = readme.segments.filter(
-    (s): s is ReadmeSegment & { type: 'translatable' } => s.type === 'translatable',
-  )
-
-  const total = translatableSegments.length
-  const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
-
-  if (total === 0) {
-    readme.save(outputPath)
-    return { locale, output: outputPath, translated: 0, skipped: 0, usage: emptyUsage }
-  }
-
-  // Extract variables and immutable fragments into protected templates.
-  const extracted = translatableSegments.map((seg) => {
-    const variables = extractVariables(seg.content)
-    const immutable = extractProtectedFragments(variables.template)
-    return { template: immutable.template, vars: variables.vars, immutable }
-  })
-
-  const itemsWithContext = translatableSegments.map((seg, i) => {
-    const context = seg.context
-    return context
-      ? { text: extracted[i].template, context }
-      : { text: extracted[i].template }
-  })
-
-  // Split into batches
-  const batches: number[][] = []
-  for (let i = 0; i < extracted.length; i += batchSize) {
-    batches.push(
-      Array.from({ length: Math.min(batchSize, extracted.length - i) }, (_, j) => i + j),
-    )
-  }
-
-  let translated = 0
-  let promptTokens = 0
-  let completionTokens = 0
-
   const systemPrompt = buildReadmeSystemPrompt(targetLanguage)
   const contextLine = context ? `\nProject context: ${context}` : ''
 
-  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-    const indices = batches[batchIndex]
-    const items = indices.map((i) => itemsWithContext[i])
+  const batches: ReadmeTranslationJob[][] = []
+  for (let i = 0; i < pendingJobs.length; i += batchSize) {
+    batches.push(pendingJobs.slice(i, i + batchSize))
+  }
 
-    const { object, usage } = await generateObject({
-      model,
-      maxTokens: 4096,
-      schema: translationsSchema,
-      messages: [
-        { role: 'system', content: systemPrompt + contextLine },
-        { role: 'user', content: JSON.stringify(items) },
-      ],
-    })
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+    const batch = batches[batchIndex]
+    const items = batch.map((job) => job.requestItem)
+
+    const { object, usage } = await retryTransientProviderCall(() =>
+      generateObject({
+        model,
+        maxTokens: 4096,
+        schema: translationsSchema,
+        messages: [
+          { role: 'system', content: systemPrompt + contextLine },
+          { role: 'user', content: JSON.stringify(items) },
+        ],
+      }),
+    )
 
     if (object.translations.length !== items.length) {
       throw new Error(
@@ -311,28 +424,35 @@ async function translateReadmeFile(
     promptTokens += usage.promptTokens
     completionTokens += usage.completionTokens
 
-    for (let j = 0; j < indices.length; j++) {
-      const entryIndex = indices[j]
+    for (let j = 0; j < batch.length; j++) {
+      const job = batch[j]
       validateProtectedTokens(
-        extracted[entryIndex].template,
+        job.extracted.template,
         object.translations[j],
-        { locale, batch: batchIndex + 1, item: entryIndex + 1 },
+        { locale, batch: batchIndex + 1, item: job.index + 1 },
       )
     }
 
-    const restoredBatch = indices.map((entryIndex, j) => {
+    const restoredBatch = batch.map((job, j) => {
       const immutableRestored = restoreProtectedFragments(
         object.translations[j],
-        extracted[entryIndex].immutable,
+        job.extracted.immutable,
       )
-      return restoreVariables(immutableRestored, extracted[entryIndex].vars)
+      return restoreVariables(immutableRestored, job.extracted.vars)
     })
 
-    for (let j = 0; j < indices.length; j++) {
-      const entryIndex = indices[j]
-      translatableSegments[entryIndex].translated = restoredBatch[j]
+    for (let j = 0; j < batch.length; j++) {
+      batch[j].segment.translated = restoredBatch[j]
       translated++
+      completedItemIds.push(batch[j].id)
+      checkpointTranslations[batch[j].id] = object.translations[j]
     }
+
+    saveCheckpoint(outputPath, checkpointIdentity, {
+      completedItemIds,
+      translations: checkpointTranslations,
+      usage: knownUsage(modelId, promptTokens, completionTokens),
+    })
 
     onProgress?.({
       locale,
@@ -344,16 +464,14 @@ async function translateReadmeFile(
   }
 
   readme.save(outputPath)
-
-  const totalTokens = promptTokens + completionTokens
-  const estimatedCostUsd = estimateCost(modelId, promptTokens, completionTokens)
+  removeCheckpoint(outputPath)
 
   return {
     locale,
     output: outputPath,
     translated,
     skipped: 0,
-    usage: { promptTokens, completionTokens, totalTokens, estimatedCostUsd },
+    usage: knownUsage(modelId, promptTokens, completionTokens),
   }
 }
 
@@ -380,18 +498,8 @@ export async function translateFile(
     onProgress,
   } = options
 
-  const resolvedKey = apiKey ?? process.env.OPENROUTER_API_KEY
-  if (!resolvedKey) {
-    throw new Error(
-      'OpenRouter API key is required. Set OPENROUTER_API_KEY or pass apiKey option.',
-    )
-  }
-
-  const openrouter = createOpenRouter({ apiKey: resolvedKey })
-  const model = openrouter.chat(modelId)
-  const targetLanguage = localeToLanguageName(locale)
   const outputPath = resolveOutputPath(input, locale, output)
-
+  const sourceBytes = readFileSync(input)
   const po = loadPO(input)
   const localeMetadata = localeMetadataFor(locale)
   const pluralFormCount = localeMetadata.pluralFormCount
@@ -439,36 +547,122 @@ export async function translateFile(
         ...(entry.msgctxt ? { msgctxt: entry.msgctxt } : {}),
       }
 
-      translationJobs.push({ entry, formIndex, extracted, requestItem })
+      translationJobs.push({
+        id: poJobId(entry, formIndex),
+        entry,
+        formIndex,
+        extracted,
+        requestItem,
+      })
       selectedEntries.add(entry)
     }
   }
 
   const total = selectedEntries.size
   const skipped = po.entries.length - total
-
-  const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
-
-  if (total === 0) {
-    normalizePluralEntries(po.entries, pluralFormCount)
-    po.save(outputPath)
-    return { locale, output: outputPath, translated: 0, skipped, usage: emptyUsage }
+  const checkpointIdentity = createCheckpointIdentity({
+    source: sourceBytes,
+    targetLocale: locale,
+    pipeline: 'po',
+    model: modelId,
+    batchSize,
+    onlyMissing,
+    context,
+  })
+  const resumeState = loadCheckpoint(outputPath, checkpointIdentity)
+  const jobsById = new Map<string, TranslationJob>()
+  for (const job of translationJobs) {
+    if (jobsById.has(job.id)) {
+      throw new Error(`PO translation jobs produced duplicate stable ID ${job.id}`)
+    }
+    jobsById.set(job.id, job)
   }
 
-  // Split translation jobs into batches.
-  const batches: number[][] = []
-  for (let i = 0; i < translationJobs.length; i += batchSize) {
-    batches.push(
-      Array.from({ length: Math.min(batchSize, translationJobs.length - i) }, (_, j) => i + j),
-    )
-  }
-
-  let translated = 0
-  let promptTokens = 0
-  let completionTokens = 0
+  const completedItemIds = [...(resumeState?.completedItemIds ?? [])]
+  const checkpointTranslations = { ...(resumeState?.translations ?? {}) }
+  const completedIds = new Set(completedItemIds)
   const remainingJobs = new Map<POEntry, number>()
   for (const job of translationJobs) {
     remainingJobs.set(job.entry, (remainingJobs.get(job.entry) ?? 0) + 1)
+  }
+
+  const restoredResume: Array<{ job: TranslationJob; translation: string }> = []
+  for (let completedIndex = 0; completedIndex < completedItemIds.length; completedIndex++) {
+    const id = completedItemIds[completedIndex]
+    const job = jobsById.get(id)
+    if (!job) {
+      const checkpointPath = checkpointPathForOutput(outputPath)
+      throw new Error(
+        `Checkpoint at ${checkpointPath} contains completed item ID ${id} `
+        + `that does not match the selected PO jobs. Remove ${checkpointPath} to restart this translation.`,
+      )
+    }
+    const protectedTranslation = checkpointTranslations[id]
+    try {
+      validateProtectedTokens(
+        job.requestItem.template,
+        protectedTranslation,
+        { locale, batch: 0, item: completedIndex + 1 },
+      )
+    } catch (error) {
+      const checkpointPath = checkpointPathForOutput(outputPath)
+      throw new Error(
+        `Checkpoint at ${checkpointPath} contains an invalid protected translation for ${id}. `
+        + `Remove ${checkpointPath} to restart this translation.`,
+        { cause: error },
+      )
+    }
+    const immutableRestored = restoreProtectedFragments(
+      protectedTranslation,
+      job.extracted.immutable,
+    )
+    restoredResume.push({
+      job,
+      translation: restoreVariables(immutableRestored, job.extracted.vars),
+    })
+  }
+
+  let translated = 0
+  for (const { job, translation } of restoredResume) {
+    job.entry.msgstrs[job.formIndex] = translation
+    const remaining = (remainingJobs.get(job.entry) ?? 1) - 1
+    remainingJobs.set(job.entry, remaining)
+    if (remaining === 0) translated++
+  }
+
+  let promptTokens = resumeState?.usage.promptTokens ?? 0
+  let completionTokens = resumeState?.usage.completionTokens ?? 0
+  const pendingIndices = translationJobs
+    .map((job, index) => completedIds.has(job.id) ? undefined : index)
+    .filter((index): index is number => index !== undefined)
+
+  if (pendingIndices.length === 0) {
+    normalizePluralEntries(po.entries, pluralFormCount)
+    po.save(outputPath)
+    removeCheckpoint(outputPath)
+    return {
+      locale,
+      output: outputPath,
+      translated,
+      skipped,
+      usage: knownUsage(modelId, promptTokens, completionTokens),
+    }
+  }
+
+  const resolvedKey = apiKey ?? process.env.OPENROUTER_API_KEY
+  if (!resolvedKey) {
+    throw new Error(
+      'OpenRouter API key is required. Set OPENROUTER_API_KEY or pass apiKey option.',
+    )
+  }
+  const openrouter = createOpenRouter({ apiKey: resolvedKey })
+  const model = openrouter.chat(modelId)
+  const targetLanguage = localeToLanguageName(locale)
+
+  // Split only unfinished translation jobs into new batches.
+  const batches: number[][] = []
+  for (let i = 0; i < pendingIndices.length; i += batchSize) {
+    batches.push(pendingIndices.slice(i, i + batchSize))
   }
 
   for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
@@ -506,6 +700,17 @@ export async function translateFile(
       if (remaining === 0) translated++
     }
 
+    for (let j = 0; j < indices.length; j++) {
+      const job = translationJobs[indices[j]]
+      completedItemIds.push(job.id)
+      checkpointTranslations[job.id] = result.translations[j]
+    }
+    saveCheckpoint(outputPath, checkpointIdentity, {
+      completedItemIds,
+      translations: checkpointTranslations,
+      usage: knownUsage(modelId, promptTokens, completionTokens),
+    })
+
     onProgress?.({
       locale,
       translated,
@@ -517,16 +722,14 @@ export async function translateFile(
 
   normalizePluralEntries(po.entries, pluralFormCount)
   po.save(outputPath)
-
-  const totalTokens = promptTokens + completionTokens
-  const estimatedCostUsd = estimateCost(modelId, promptTokens, completionTokens)
+  removeCheckpoint(outputPath)
 
   return {
     locale,
     output: outputPath,
     translated,
     skipped,
-    usage: { promptTokens, completionTokens, totalTokens, estimatedCostUsd },
+    usage: knownUsage(modelId, promptTokens, completionTokens),
   }
 }
 

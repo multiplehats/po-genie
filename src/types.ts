@@ -25,15 +25,19 @@ export interface TranslateOptions {
 
 export interface Progress {
   locale: string
-  /** Catalog entries whose selected translation jobs have all completed. */
+  /** Completed catalog entries for PO, or completed translatable segments for readme; includes resumed work. */
   translated: number
-  /** Catalog entries selected for translation, not internal plural-form jobs. */
+  /** Selected catalog entries for PO (not plural-form jobs), or translatable readme segments. */
   total: number
   batch: number
   batches: number
 }
 
 export interface TokenUsage {
+  /**
+   * Known usage from successful provider responses, including checkpointed
+   * work. Failed-attempt usage is unavailable and therefore excluded.
+   */
   promptTokens: number
   completionTokens: number
   totalTokens: number
@@ -44,9 +48,9 @@ export interface TokenUsage {
 export interface TranslateResult {
   locale: string
   output: string
-  /** Catalog entries translated, not internal plural-form jobs. */
+  /** Completed catalog entries for PO, or translatable segments for readme; includes resumed work. */
   translated: number
-  /** Catalog entries with no translation jobs selected. */
+  /** PO catalog entries not selected; always zero for readme translation. */
   skipped: number
   usage: TokenUsage
 }

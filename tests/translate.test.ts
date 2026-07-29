@@ -40,6 +40,11 @@ vi.mock('citty', () => ({
 import { generateObject } from 'ai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import { loadPO } from '../src/po.js'
+import {
+  checkpointPathForOutput,
+  createCheckpointIdentity,
+  saveCheckpoint,
+} from '../src/checkpoint.js'
 import { translate, translateFile } from '../src/translate.js'
 
 const UNTRANSLATED_PO = `
@@ -322,7 +327,9 @@ describe('translateFile', () => {
       onProgress: (event) => progress.push(event.translated),
     })).rejects.toThrow(/nl_NL.*batch 1.*item 2.*VAR_0/)
 
+    expect(generateObject).toHaveBeenCalledTimes(1)
     expect(existsSync(output)).toBe(false)
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
     expect(progress).toEqual([])
   })
 
@@ -599,6 +606,8 @@ msgstr ""
       apiKey: 'test-key',
     })).rejects.toThrow('AI returned 1 translations for 2 inputs')
 
+    expect(generateObject).toHaveBeenCalledTimes(1)
+    expect(existsSync(checkpointPathForOutput(input))).toBe(false)
     expect(loadPO(input).entries[0].msgstrs).toEqual(['', ''])
   })
 
@@ -722,6 +731,300 @@ msgstr ""
 
     expect(result.translated).toBe(3)
     expect(generateObject).toHaveBeenCalledTimes(3)
+  })
+
+  it('checkpoints only the first validated PO batch when the second batch fails', async () => {
+    const input = join(tmpDir, 'input.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Eerste vertaling'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockRejectedValueOnce(Object.assign(new Error('bad request'), {
+        statusCode: 400,
+      }))
+    const progress: number[] = []
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'sk-never-persist',
+      context: 'private checkout context',
+      batchSize: 1,
+      onProgress: ({ translated }) => progress.push(translated),
+    })).rejects.toThrow('bad request')
+
+    expect(generateObject).toHaveBeenCalledTimes(2)
+    expect(existsSync(output)).toBe(false)
+    expect(progress).toEqual([1])
+
+    const checkpointPath = checkpointPathForOutput(output)
+    const serialized = readFileSync(checkpointPath, 'utf8')
+    const checkpoint = JSON.parse(serialized)
+    expect(checkpoint.completedItemIds).toHaveLength(1)
+    expect(Object.values(checkpoint.translations)).toEqual(['Eerste vertaling'])
+    expect(checkpoint.usage).toMatchObject({
+      promptTokens: 100,
+      completionTokens: 50,
+      totalTokens: 150,
+    })
+    expect(checkpoint.usage.estimatedCostUsd).toBeCloseTo(0.00028)
+    expect(serialized).not.toContain('sk-never-persist')
+    expect(serialized).not.toContain('private checkout context')
+    expect(serialized).not.toContain('Save settings')
+    expect(serialized).not.toContain('professional software')
+  })
+
+  it('resumes PO work without requesting completed jobs twice', async () => {
+    const input = join(tmpDir, 'input.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Instellingen opslaan'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockRejectedValueOnce(Object.assign(new Error('bad request'), {
+        statusCode: 400,
+      }))
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow('bad request')
+    expect(existsSync(checkpointPathForOutput(output))).toBe(true)
+
+    vi.mocked(generateObject).mockReset()
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Annuleren'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockResolvedValueOnce({
+        object: { translations: ['Fout'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+    const progress: number[] = []
+
+    const result = await translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+      onProgress: ({ translated }) => progress.push(translated),
+    })
+
+    expect(generateObject).toHaveBeenCalledTimes(2)
+    expect(progress).toEqual([2, 3])
+    expect(result).toMatchObject({
+      translated: 3,
+      skipped: 0,
+      usage: { promptTokens: 300, completionTokens: 150, totalTokens: 450 },
+    })
+    expect(loadPO(output).entries.map(({ msgid, msgstr }) => [msgid, msgstr])).toEqual([
+      ['Save settings', 'Instellingen opslaan'],
+      ['Cancel', 'Annuleren'],
+      ['Error', 'Fout'],
+    ])
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+  })
+
+  it.each([
+    {
+      case: 'stale source',
+      prepare(input: string, output: string) {
+        saveCheckpoint(output, createCheckpointIdentity({
+          source: readFileSync(input),
+          targetLocale: 'nl_NL',
+          pipeline: 'po',
+          model: 'anthropic/claude-3.5-haiku',
+          batchSize: 1,
+          onlyMissing: true,
+        }), {
+          completedItemIds: [],
+          translations: {},
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        })
+        writeFileSync(input, `${UNTRANSLATED_PO}\n# source changed`)
+      },
+      error: /identity mismatch.*sourceSha256/i,
+    },
+    {
+      case: 'corrupt JSON',
+      prepare(_input: string, output: string) {
+        writeFileSync(checkpointPathForOutput(output), '{"schemaVersion":1,broken')
+      },
+      error: /corrupt JSON/i,
+    },
+    {
+      case: 'option mismatch',
+      prepare(input: string, output: string) {
+        saveCheckpoint(output, createCheckpointIdentity({
+          source: readFileSync(input),
+          targetLocale: 'nl_NL',
+          pipeline: 'po',
+          model: 'anthropic/claude-3.5-haiku',
+          batchSize: 2,
+          onlyMissing: true,
+        }), {
+          completedItemIds: [],
+          translations: {},
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        })
+      },
+      error: /identity mismatch.*batchSize/i,
+    },
+    {
+      case: 'unknown completed item',
+      prepare(input: string, output: string) {
+        saveCheckpoint(output, createCheckpointIdentity({
+          source: readFileSync(input),
+          targetLocale: 'nl_NL',
+          pipeline: 'po',
+          model: 'anthropic/claude-3.5-haiku',
+          batchSize: 1,
+          onlyMissing: true,
+        }), {
+          completedItemIds: ['po:not-a-selected-job'],
+          translations: { 'po:not-a-selected-job': 'Onbekend' },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        })
+      },
+      error: /does not match the selected PO jobs/i,
+    },
+  ])('rejects a $case checkpoint before creating the PO provider', async ({ prepare, error }) => {
+    const input = join(tmpDir, 'input.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    writeFileSync(output, 'existing output bytes')
+    prepare(input, output)
+    const checkpointPath = checkpointPathForOutput(output)
+    const checkpointBytes = readFileSync(checkpointPath)
+    const outputBytes = readFileSync(output)
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow(error)
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(readFileSync(checkpointPath)).toEqual(checkpointBytes)
+    expect(readFileSync(output)).toEqual(outputBytes)
+  })
+
+  it('revalidates protected PO checkpoint text before applying it', async () => {
+    const input = join(tmpDir, 'vars.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, WITH_VARS_PO)
+    vi.mocked(generateObject)
+      .mockResolvedValueOnce({
+        object: { translations: ['Je hebt [VAR_0] [VAR_1]'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+      .mockRejectedValueOnce(Object.assign(new Error('bad request'), {
+        statusCode: 400,
+      }))
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow('bad request')
+
+    const checkpointPath = checkpointPathForOutput(output)
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf8'))
+    checkpoint.translations[checkpoint.completedItemIds[0]] = 'Geen beschermde tokens'
+    writeFileSync(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`)
+    const editedBytes = readFileSync(checkpointPath)
+    vi.clearAllMocks()
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      batchSize: 1,
+    })).rejects.toThrow(/invalid protected translation/i)
+
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(existsSync(output)).toBe(false)
+    expect(readFileSync(checkpointPath)).toEqual(editedBytes)
+  })
+
+  it('finishes a zero-job PO with a matching empty checkpoint without a provider', async () => {
+    const input = join(tmpDir, 'complete.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, EXTRA_SLOT_PLURAL_PO)
+    saveCheckpoint(output, createCheckpointIdentity({
+      source: readFileSync(input),
+      targetLocale: 'nl_NL',
+      pipeline: 'po',
+      model: 'anthropic/claude-3.5-haiku',
+      batchSize: 40,
+      onlyMissing: true,
+    }), {
+      completedItemIds: [],
+      translations: {},
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    })
+
+    const result = await translateFile({ input, output, locale: 'nl_NL' })
+
+    expect(result).toMatchObject({
+      translated: 0,
+      skipped: 1,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    })
+    expect(createOpenRouter).not.toHaveBeenCalled()
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(existsSync(output)).toBe(true)
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+  })
+
+  it('retries a transient provider failure without guessing failed-attempt usage', async () => {
+    const input = join(tmpDir, 'input.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    vi.useFakeTimers()
+    vi.mocked(generateObject)
+      .mockRejectedValueOnce(Object.assign(new Error('service unavailable'), {
+        statusCode: 503,
+      }))
+      .mockResolvedValueOnce({
+        object: { translations: ['Instellingen opslaan', 'Annuleren', 'Fout'] },
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      } as any)
+
+    try {
+      const translation = translateFile({
+        input,
+        locale: 'nl_NL',
+        apiKey: 'test-key',
+      })
+      const expectation = expect(translation).resolves.toMatchObject({
+        translated: 3,
+        usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+      })
+      await vi.advanceTimersByTimeAsync(50)
+
+      await expectation
+      expect(generateObject).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it.each([
