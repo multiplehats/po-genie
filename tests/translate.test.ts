@@ -19,6 +19,7 @@ vi.mock('../src/po.js', async (importOriginal) => {
   return {
     ...actual,
     loadPO: vi.fn(actual.loadPO),
+    parsePO: vi.fn(actual.parsePO),
   }
 })
 
@@ -39,7 +40,7 @@ vi.mock('citty', () => ({
 
 import { generateObject } from 'ai'
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
-import { loadPO } from '../src/po.js'
+import { loadPO, parsePO } from '../src/po.js'
 import {
   checkpointPathForOutput,
   createCheckpointIdentity,
@@ -249,6 +250,58 @@ describe('translateFile', () => {
     const headers = readHeaders(result.output)
     expect(headers.Language).toBe('nl_NL')
     expect(headers['Plural-Forms']).toBe('nplurals=2; plural=(n != 1);')
+  })
+
+  it('plans and saves PO work from the captured identity bytes without rereading the input path', async () => {
+    const capturedSource = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "Captured source"
+msgstr ""
+`.trim()
+    const changedSource = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "Changed second read"
+msgstr ""
+`.trim()
+    const input = join(tmpDir, 'input.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, capturedSource)
+    const originalLoadPO = vi.mocked(loadPO).getMockImplementation()
+    if (!originalLoadPO) throw new Error('Expected loadPO mock implementation')
+    const loadPOMock = vi.mocked(loadPO)
+    try {
+      loadPOMock.mockImplementationOnce((filePath) => {
+        writeFileSync(filePath, changedSource)
+        return originalLoadPO(filePath)
+      })
+      mockAI([['Vastgelegde vertaling']])
+
+      await translateFile({
+        input,
+        output,
+        locale: 'nl_NL',
+        apiKey: 'test-key',
+      })
+
+      expect(loadPO).not.toHaveBeenCalled()
+      const request = vi.mocked(generateObject).mock.calls[0][0]
+      expect(JSON.parse(request.messages![1].content as string)).toEqual([
+        { template: 'Captured source' },
+      ])
+      const saved = readFileSync(output, 'utf8')
+      expect(saved).toContain('msgid "Captured source"')
+      expect(saved).toContain('msgstr "Vastgelegde vertaling"')
+      expect(saved).not.toContain('Changed second read')
+    } finally {
+      loadPOMock.mockReset()
+      loadPOMock.mockImplementation(originalLoadPO)
+    }
   })
 
   it('sets Polish metadata on the normal translated save path and preserves other headers', async () => {
@@ -615,10 +668,10 @@ msgstr ""
     const input = join(tmpDir, 'positional.po')
     writeFileSync(input, POSITIONAL_PLURAL_PO)
 
-    const originalLoadPO = vi.mocked(loadPO).getMockImplementation()
-    if (!originalLoadPO) throw new Error('Expected loadPO mock implementation')
-    const po = originalLoadPO(input)
-    vi.mocked(loadPO).mockReturnValueOnce(po)
+    const originalParsePO = vi.mocked(parsePO).getMockImplementation()
+    if (!originalParsePO) throw new Error('Expected parsePO mock implementation')
+    const po = originalParsePO(readFileSync(input))
+    vi.mocked(parsePO).mockReturnValueOnce(po)
     mockAI([[
       'Przenieś [VAR_0] do [VAR_1]',
       'Przenieś [VAR_0] elementy do [VAR_1]',

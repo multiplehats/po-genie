@@ -194,7 +194,11 @@ export function localeMetadataFor(locale: string): LocaleMetadata {
 }
 
 export function loadPO(filePath: string): POFile {
-  const content = readFileSync(filePath)
+  return parsePO(readFileSync(filePath))
+}
+
+/** Parse a PO/POT model from already captured source content. */
+export function parsePO(content: string | Buffer): POFile {
   const parsed = gettextParser.po.parse(content)
 
   const entries: POEntry[] = []

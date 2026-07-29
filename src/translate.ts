@@ -18,9 +18,9 @@ import {
   restoreVariables,
   validateProtectedTokens,
 } from './variables.js'
-import { loadPO, localeMetadataFor, localeToLanguageName } from './po.js'
+import { localeMetadataFor, localeToLanguageName, parsePO } from './po.js'
 import type { POEntry } from './po.js'
-import { loadReadme } from './readme.js'
+import { parseReadme } from './readme.js'
 import type { ReadmeSegment } from './readme.js'
 import { retryTransientProviderCall } from './retry.js'
 import type { TranslateOptions, TranslateResult, TokenUsage } from './types.js'
@@ -290,7 +290,7 @@ async function translateReadmeFile(
 
   const outputPath = resolveOutputPath(input, locale, output)
   const sourceBytes = readFileSync(input)
-  const readme = loadReadme(input)
+  const readme = parseReadme(sourceBytes)
   const translatableSegments = readme.segments.filter(
     (s): s is ReadmeSegment & { type: 'translatable' } => s.type === 'translatable',
   )
@@ -500,7 +500,7 @@ export async function translateFile(
 
   const outputPath = resolveOutputPath(input, locale, output)
   const sourceBytes = readFileSync(input)
-  const po = loadPO(input)
+  const po = parsePO(sourceBytes)
   const localeMetadata = localeMetadataFor(locale)
   const pluralFormCount = localeMetadata.pluralFormCount
   po.setLocale(locale)

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { loadReadme } from '../src/readme.js'
+import { loadReadme, parseReadme } from '../src/readme.js'
 
 // ---------------------------------------------------------------------------
 // Mock the AI SDK — we don't want real API calls in unit tests
@@ -12,6 +12,7 @@ vi.mock('../src/readme.js', async (importOriginal) => {
   return {
     ...actual,
     loadReadme: vi.fn(actual.loadReadme),
+    parseReadme: vi.fn(actual.parseReadme),
   }
 })
 
@@ -365,6 +366,56 @@ describe('translateFile with readme', () => {
     expect(existsSync(result.output)).toBe(true)
   })
 
+  it('plans and saves readme work from the captured identity bytes without rereading the input path', async () => {
+    const capturedSource = [
+      '=== Captured Plugin ===',
+      'Contributors: test',
+      '',
+      'Captured source.',
+      '',
+    ].join('\n')
+    const changedSource = [
+      '=== Changed Plugin ===',
+      'Contributors: test',
+      '',
+      'Changed second read.',
+      '',
+    ].join('\n')
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, capturedSource)
+    const originalLoadReadme = vi.mocked(loadReadme).getMockImplementation()
+    if (!originalLoadReadme) throw new Error('Expected loadReadme mock implementation')
+    const loadReadmeMock = vi.mocked(loadReadme)
+    try {
+      loadReadmeMock.mockImplementationOnce((filePath) => {
+        writeFileSync(filePath, changedSource)
+        return originalLoadReadme(filePath)
+      })
+      mockAI([['Vastgelegde vertaling.']])
+
+      await translateFile({
+        input,
+        output,
+        locale: 'nl_NL',
+        apiKey: 'test-key',
+      })
+
+      expect(loadReadme).not.toHaveBeenCalled()
+      const request = vi.mocked(generateObject).mock.calls[0][0] as any
+      expect(JSON.parse(request.messages[1].content)).toEqual([
+        { text: 'Captured source.', context: 'short description' },
+      ])
+      const saved = readFileSync(output, 'utf8')
+      expect(saved).toContain('=== Captured Plugin ===')
+      expect(saved).toContain('Vastgelegde vertaling.')
+      expect(saved).not.toContain('Changed second read.')
+    } finally {
+      loadReadmeMock.mockReset()
+      loadReadmeMock.mockImplementation(originalLoadReadme)
+    }
+  })
+
   it('output path defaults to readme-{locale}.txt', async () => {
     const input = join(tmpDir, 'readme.txt')
     writeFileSync(input, readFileSync(README_FIXTURE))
@@ -525,10 +576,10 @@ describe('translateFile with readme', () => {
     const input = join(tmpDir, 'readme.txt')
     writeFileSync(input, content)
 
-    const originalLoadReadme = vi.mocked(loadReadme).getMockImplementation()
-    if (!originalLoadReadme) throw new Error('Expected loadReadme mock implementation')
-    const readme = originalLoadReadme(input)
-    vi.mocked(loadReadme).mockReturnValueOnce(readme)
+    const originalParseReadme = vi.mocked(parseReadme).getMockImplementation()
+    if (!originalParseReadme) throw new Error('Expected parseReadme mock implementation')
+    const readme = originalParseReadme(readFileSync(input))
+    vi.mocked(parseReadme).mockReturnValueOnce(readme)
     mockAI([['Bezoek [IMM_0].', 'Voer hulp uit.']])
 
     await expect(translateFile({
@@ -615,10 +666,10 @@ describe('translateFile with readme', () => {
     ].join('\n')
     const input = join(tmpDir, 'readme.txt')
     writeFileSync(input, content)
-    const originalLoadReadme = vi.mocked(loadReadme).getMockImplementation()
-    if (!originalLoadReadme) throw new Error('Expected loadReadme mock implementation')
-    vi.mocked(loadReadme).mockImplementationOnce((filePath) => {
-      const readme = originalLoadReadme(filePath)
+    const originalParseReadme = vi.mocked(parseReadme).getMockImplementation()
+    if (!originalParseReadme) throw new Error('Expected parseReadme mock implementation')
+    vi.mocked(parseReadme).mockImplementationOnce((source) => {
+      const readme = originalParseReadme(source)
       const faqQuestion = readme.segments.find((segment) => segment.content === 'Can I keep [brackets]?')
       if (faqQuestion) delete faqQuestion.context
       return readme

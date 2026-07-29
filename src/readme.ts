@@ -68,7 +68,14 @@ function translatable(content: string, prefix: string, suffix: string, context: 
 }
 
 export function loadReadme(filePath: string): ReadmeFile {
-  const raw = readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  return parseReadme(readFileSync(filePath))
+}
+
+/** Parse a WordPress readme model from already captured source content. */
+export function parseReadme(content: string | Buffer): ReadmeFile {
+  const raw = (typeof content === 'string' ? content : content.toString('utf8'))
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
   const lines = raw.split('\n')
   const segments: ReadmeSegment[] = []
 
