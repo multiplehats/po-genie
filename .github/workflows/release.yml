@@ -16,35 +16,26 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 24
+          package-manager-cache: false
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --prefer-offline
 
-      - name: Create Release Pull Request
+      - name: Create Release Pull Request or Publish to npm
         id: changesets
         uses: changesets/action@v1
         with:
           commit: 'chore(release): version package'
           title: 'chore(release): version package'
+          publish: pnpm ci:publish
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-      # When there are no changesets, it means a version PR was just merged.
-      # Build and publish the new version to npm using OIDC trusted publishing.
-      - name: Build
-        if: steps.changesets.outputs.hasChangesets == 'false'
-        run: pnpm run build
-
-      - name: Publish to npm (trusted publishing)
-        if: steps.changesets.outputs.hasChangesets == 'false'
-        run: npm publish --provenance --access public
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
