@@ -73,6 +73,16 @@ interface TranslationJob {
   requestItem: TranslationRequestItem
 }
 
+function normalizePluralEntries(entries: POEntry[], pluralFormCount: number): void {
+  for (const entry of entries) {
+    if (!entry.msgid_plural) continue
+    entry.msgstrs.length = pluralFormCount
+    for (let formIndex = 0; formIndex < pluralFormCount; formIndex++) {
+      entry.msgstrs[formIndex] ??= ''
+    }
+  }
+}
+
 function buildSystemPrompt(targetLanguage: string, context?: string): string {
   const contextLine = context ? `\nProject context: ${context}` : ''
 
@@ -391,13 +401,6 @@ export async function translateFile(
   const selectedEntries = new Set<POEntry>()
 
   for (const entry of po.entries) {
-    if (entry.msgid_plural) {
-      entry.msgstrs.length = pluralFormCount
-      for (let formIndex = 0; formIndex < pluralFormCount; formIndex++) {
-        entry.msgstrs[formIndex] ??= ''
-      }
-    }
-
     const singularVariables = extractVariables(entry.msgid)
     const singularImmutable = extractProtectedFragments(singularVariables.template)
     const singularExtracted = {
@@ -447,6 +450,7 @@ export async function translateFile(
   const emptyUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
 
   if (total === 0) {
+    normalizePluralEntries(po.entries, pluralFormCount)
     po.save(outputPath)
     return { locale, output: outputPath, translated: 0, skipped, usage: emptyUsage }
   }
@@ -511,6 +515,7 @@ export async function translateFile(
     })
   }
 
+  normalizePluralEntries(po.entries, pluralFormCount)
   po.save(outputPath)
 
   const totalTokens = promptTokens + completionTokens

@@ -14,6 +14,14 @@ import gettextParser from 'gettext-parser'
 // ---------------------------------------------------------------------------
 // Mock the AI SDK — we don't want real API calls in unit tests
 // ---------------------------------------------------------------------------
+vi.mock('../src/po.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/po.js')>()
+  return {
+    ...actual,
+    loadPO: vi.fn(actual.loadPO),
+  }
+})
+
 vi.mock('@openrouter/ai-sdk-provider', () => ({
   createOpenRouter: vi.fn(() => ({
     chat: vi.fn(() => 'mock-model'),
@@ -592,6 +600,29 @@ msgstr ""
     })).rejects.toThrow('AI returned 1 translations for 2 inputs')
 
     expect(loadPO(input).entries[0].msgstrs).toEqual(['', ''])
+  })
+
+  it('leaves loaded plural slots untouched when protected-token validation rejects the batch', async () => {
+    const input = join(tmpDir, 'positional.po')
+    writeFileSync(input, POSITIONAL_PLURAL_PO)
+
+    const originalLoadPO = vi.mocked(loadPO).getMockImplementation()
+    if (!originalLoadPO) throw new Error('Expected loadPO mock implementation')
+    const po = originalLoadPO(input)
+    vi.mocked(loadPO).mockReturnValueOnce(po)
+    mockAI([[
+      'Przenieś [VAR_0] do [VAR_1]',
+      'Przenieś [VAR_0] elementy do [VAR_1]',
+      'Przenieś elementy',
+    ]])
+
+    await expect(translateFile({
+      input,
+      locale: 'pl_PL',
+      apiKey: 'test-key',
+    })).rejects.toThrow(/item 3.*VAR_[01]/)
+
+    expect(po.entries[0].msgstrs).toEqual(['', ''])
   })
 
   it('skips already-translated entries when onlyMissing is true (default)', async () => {
