@@ -366,6 +366,19 @@ describe('translateFile with readme', () => {
     expect(existsSync(result.output)).toBe(true)
   })
 
+  it('disables AI SDK retries so the readme retry boundary controls every provider attempt', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    writeFileSync(input, readFileSync(README_FIXTURE))
+    mockAI([fixtureTranslations('translated')])
+
+    await translateFile({ input, locale: 'nl_NL', apiKey: 'test-key' })
+
+    expect(generateObject).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(generateObject).mock.calls[0][0]).toMatchObject({
+      maxRetries: 0,
+    })
+  })
+
   it('plans and saves readme work from the captured identity bytes without rereading the input path', async () => {
     const capturedSource = [
       '=== Captured Plugin ===',

@@ -252,6 +252,19 @@ describe('translateFile', () => {
     expect(headers['Plural-Forms']).toBe('nplurals=2; plural=(n != 1);')
   })
 
+  it('disables AI SDK retries so the PO retry boundary controls every provider attempt', async () => {
+    const input = join(tmpDir, 'input.po')
+    writeFileSync(input, UNTRANSLATED_PO)
+    mockAI([['Instellingen opslaan', 'Annuleren', 'Fout']])
+
+    await translateFile({ input, locale: 'nl_NL', apiKey: 'test-key' })
+
+    expect(generateObject).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(generateObject).mock.calls[0][0]).toMatchObject({
+      maxRetries: 0,
+    })
+  })
+
   it('plans and saves PO work from the captured identity bytes without rereading the input path', async () => {
     const capturedSource = `
 msgid ""

@@ -162,6 +162,7 @@ async function translateBatch(
   const { object, usage } = await retryTransientProviderCall(() =>
     generateObject({
       model,
+      maxRetries: 0,
       maxTokens: 4096,
       schema: translationsSchema,
       messages: [
@@ -406,6 +407,7 @@ async function translateReadmeFile(
     const { object, usage } = await retryTransientProviderCall(() =>
       generateObject({
         model,
+        maxRetries: 0,
         maxTokens: 4096,
         schema: translationsSchema,
         messages: [
