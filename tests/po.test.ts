@@ -156,6 +156,23 @@ describe('loadPO', () => {
     expect(headers['Project-Id-Version']).toBe('po-genie test')
   })
 
+  it('sets French metadata with the source catalog unary-minus rule', () => {
+    const file = join(tmpDir, 'messages.pot')
+    const out = join(tmpDir, 'messages-fr_FR.po')
+    writeFileSync(file, POT_WITH_EMPTY_LANGUAGE)
+
+    const po = loadPO(file)
+    po.setLocale('fr_FR')
+    po.save(out)
+
+    const headers = readHeaders(out)
+    expect(headers.Language).toBe('fr_FR')
+    expect(headers['Plural-Forms']).toBe(
+      'nplurals = 2; plural = (n <= -2 || n >= 2);',
+    )
+    expect(headers['Project-Id-Version']).toBe('po-genie test')
+  })
+
   it('rejects unsupported locales before an output file can be replaced', () => {
     const file = join(tmpDir, 'messages.pot')
     const out = join(tmpDir, 'messages-xx_XX.po')

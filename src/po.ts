@@ -50,7 +50,7 @@ function pluralFormsForLocale(locale: string): string {
   // Reject source entries that are not valid GNU gettext C-style expressions.
   if (
     !expression ||
-    /===|!==|-\s*\d/.test(expression) ||
+    /===|!==/.test(expression) ||
     /[^n0-9\s%<>=!&|?:()+*/-]/.test(expression)
   ) {
     throw new Error(`Unsupported gettext plural rules for locale "${locale}"`)
