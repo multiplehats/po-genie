@@ -53,6 +53,7 @@ interface TranslationRequestItem {
   pluralSource?: string
   formIndex?: number
   formCount?: number
+  pluralForms?: string
   msgctxt?: string
 }
 
@@ -75,8 +76,9 @@ Rules:
 - Keep HTML tags unchanged
 - Match the tone: concise for labels/buttons, natural for descriptions
 - The optional msgctxt field is metadata for disambiguation; never include it in a translation
-- Plural items include singularSource, pluralSource, formIndex, and formCount as metadata
-- Translate only the template field, choosing wording appropriate for the specified plural form
+- Plural items include raw singularSource and pluralSource strings plus formIndex, formCount, and pluralForms as non-translatable metadata
+- Treat pluralForms as the authoritative mapping for the target form index
+- Translate only the template field; preserve its [VAR_n] tokens and use raw source placeholders only to understand their identity
 - Do not add or remove punctuation unless required by the target language
 - Return ONLY the translated strings array — no explanations`
 }
@@ -352,13 +354,21 @@ export async function translateFile(
   const outputPath = resolveOutputPath(input, locale, output)
 
   const po = loadPO(input)
-  const pluralFormCount = localeMetadataFor(locale).pluralFormCount
+  const localeMetadata = localeMetadataFor(locale)
+  const pluralFormCount = localeMetadata.pluralFormCount
   po.setLocale(locale)
 
   const translationJobs: TranslationJob[] = []
   const selectedEntries = new Set<POEntry>()
 
   for (const entry of po.entries) {
+    if (entry.msgid_plural) {
+      entry.msgstrs.length = pluralFormCount
+      for (let formIndex = 0; formIndex < pluralFormCount; formIndex++) {
+        entry.msgstrs[formIndex] ??= ''
+      }
+    }
+
     const singularExtracted = extractVariables(entry.msgid)
     const pluralExtracted = entry.msgid_plural
       ? extractVariables(entry.msgid_plural)
@@ -373,10 +383,11 @@ export async function translateFile(
         template: extracted.template,
         ...(pluralExtracted
           ? {
-              singularSource: singularExtracted.template,
-              pluralSource: pluralExtracted.template,
+              singularSource: entry.msgid,
+              pluralSource: entry.msgid_plural!,
               formIndex,
               formCount,
+              pluralForms: localeMetadata.pluralForms,
             }
           : {}),
         ...(entry.msgctxt ? { msgctxt: entry.msgctxt } : {}),

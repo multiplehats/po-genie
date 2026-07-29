@@ -132,6 +132,29 @@ msgstr[1] ""
 msgstr[2] "Wiele plików"
 `.trim()
 
+const EXTRA_SLOT_PLURAL_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "One file"
+msgid_plural "Many files"
+msgstr[0] "Eén bestand"
+msgstr[1] "Meerdere bestanden"
+msgstr[2] "Extra vorm"
+`.trim()
+
+const POSITIONAL_PLURAL_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "Move %1$s into %2$s"
+msgid_plural "Move %2$s items into %1$s"
+msgstr[0] ""
+msgstr[1] ""
+`.trim()
+
 let tmpDir: string
 
 beforeEach(() => {
@@ -283,6 +306,7 @@ describe('translateFile', () => {
         pluralSource: 'Many items',
         formIndex: 0,
         formCount: 2,
+        pluralForms: 'nplurals=2; plural=(n != 1);',
         msgctxt: 'cart',
       },
       {
@@ -291,6 +315,7 @@ describe('translateFile', () => {
         pluralSource: 'Many items',
         formIndex: 1,
         formCount: 2,
+        pluralForms: 'nplurals=2; plural=(n != 1);',
         msgctxt: 'cart',
       },
     ])
@@ -335,6 +360,72 @@ describe('translateFile', () => {
     ])
   })
 
+  it('supplies the validated locale rule when equal form counts use different mappings', async () => {
+    const input = join(tmpDir, 'plural.po')
+    writeFileSync(input, TWO_FORM_PLURAL_PO)
+    mockAI([
+      ['Eén item', 'Meerdere items'],
+      ['Un élément', 'Plusieurs éléments'],
+    ])
+
+    await translateFile({ input, locale: 'nl_NL', apiKey: 'test-key' })
+    await translateFile({ input, locale: 'fr_FR', apiKey: 'test-key' })
+
+    const dutchItems = JSON.parse(
+      vi.mocked(generateObject).mock.calls[0][0].messages![1].content as string,
+    )
+    const frenchItems = JSON.parse(
+      vi.mocked(generateObject).mock.calls[1][0].messages![1].content as string,
+    )
+    expect(dutchItems[0]).toMatchObject({
+      formCount: 2,
+      pluralForms: 'nplurals=2; plural=(n != 1);',
+    })
+    expect(frenchItems[0]).toMatchObject({
+      formCount: 2,
+      pluralForms: 'nplurals=2; plural=(n > 1);',
+    })
+  })
+
+  it('keeps raw companion sources unambiguous when positional placeholders reorder', async () => {
+    const input = join(tmpDir, 'positional.po')
+    writeFileSync(input, POSITIONAL_PLURAL_PO)
+    mockAI([[
+      'Verplaats [VAR_0] naar [VAR_1]',
+      'Verplaats [VAR_0] items naar [VAR_1]',
+    ]])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    const request = vi.mocked(generateObject).mock.calls[0][0]
+    expect(JSON.parse(request.messages![1].content as string)).toEqual([
+      {
+        template: 'Move [VAR_0] into [VAR_1]',
+        singularSource: 'Move %1$s into %2$s',
+        pluralSource: 'Move %2$s items into %1$s',
+        formIndex: 0,
+        formCount: 2,
+        pluralForms: 'nplurals=2; plural=(n != 1);',
+      },
+      {
+        template: 'Move [VAR_0] items into [VAR_1]',
+        singularSource: 'Move %1$s into %2$s',
+        pluralSource: 'Move %2$s items into %1$s',
+        formIndex: 1,
+        formCount: 2,
+        pluralForms: 'nplurals=2; plural=(n != 1);',
+      },
+    ])
+    expect(loadPO(result.output).entries[0].msgstrs).toEqual([
+      'Verplaats %1$s naar %2$s',
+      'Verplaats %2$s items naar %1$s',
+    ])
+  })
+
   it('translates only missing required plural slots and preserves completed forms', async () => {
     const input = join(tmpDir, 'partial-plural.po')
     writeFileSync(input, PARTIAL_THREE_FORM_PLURAL_PO)
@@ -354,6 +445,7 @@ describe('translateFile', () => {
         pluralSource: 'Many files',
         formIndex: 1,
         formCount: 3,
+        pluralForms: 'nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);',
         msgctxt: 'storage',
       },
     ])
@@ -362,6 +454,24 @@ describe('translateFile', () => {
       'Jeden plik',
       'Pliki',
       'Wiele plików',
+    ])
+  })
+
+  it('removes extra plural slots on the zero-job onlyMissing save path', async () => {
+    const input = join(tmpDir, 'extra-slots.po')
+    writeFileSync(input, EXTRA_SLOT_PLURAL_PO)
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    expect(result).toMatchObject({ translated: 0, skipped: 1 })
+    expect(generateObject).not.toHaveBeenCalled()
+    expect(loadPO(result.output).entries[0].msgstrs).toEqual([
+      'Eén bestand',
+      'Meerdere bestanden',
     ])
   })
 
