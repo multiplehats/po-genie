@@ -77,8 +77,7 @@ function inlineCodeEnd(source: string, start: number): number | undefined {
 
     const candidateLength = runLength(source, cursor, '`')
     if (
-      !isBackslashEscaped(source, cursor)
-      && candidateLength === delimiterLength
+      candidateLength === delimiterLength
       && cursor > start + delimiterLength
     ) {
       return cursor + candidateLength

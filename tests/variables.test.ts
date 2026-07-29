@@ -212,6 +212,15 @@ describe('protected immutable fragments', () => {
     expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
   })
 
+  it('protects a code span whose content ends with a backslash', () => {
+    const original = 'Protect `path\\` but translate \\`name\\`.'
+    const extracted = extractProtectedFragments(original)
+
+    expect(extracted.template).toBe('Protect [IMM_0] but translate \\`name\\`.')
+    expect(extracted.fragments).toEqual(['`path\\`'])
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
+  })
+
   it('protects only a balanced Markdown destination and leaves its title translatable', () => {
     const original = 'Read [docs](https://example.com/Foo_(bar) "Open documentation").'
     const extracted = extractProtectedFragments(original)
