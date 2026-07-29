@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="PO Genie" width="720">
+  <img src="assets/logo.png" alt="PO Genie" width="420">
 </p>
 
 # po-genie
