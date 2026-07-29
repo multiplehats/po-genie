@@ -23,7 +23,7 @@
     "build": "vite build && tsc --emitDeclarationOnly --declaration --declarationDir dist",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:package": "pnpm build && vitest run tests/package-smoke.test.ts",
+    "test:package": "pnpm build && node tests/package-smoke.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepublishOnly": "pnpm run build && pnpm run test",
