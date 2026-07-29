@@ -10,7 +10,7 @@ export function parseBatchSize(value: string | undefined): number | undefined {
 const main = defineCommand({
   meta: {
     name: 'po-genie',
-    version: '0.1.0',
+    version: __PO_GENIE_VERSION__,
     description: 'AI-powered .po and readme.txt translator',
   },
   args: {

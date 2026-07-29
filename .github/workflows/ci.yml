@@ -33,7 +33,7 @@ jobs:
       - run: pnpm typecheck
 
   test:
-    name: Test
+    name: Test package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,4 +43,5 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm test:package
       - run: pnpm test

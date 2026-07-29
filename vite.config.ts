@@ -1,7 +1,11 @@
 import { defineConfig } from 'vite'
 import { builtinModules } from 'module'
+import packageJson from './package.json'
 
 export default defineConfig({
+  define: {
+    __PO_GENIE_VERSION__: JSON.stringify(packageJson.version),
+  },
   build: {
     lib: {
       entry: {
