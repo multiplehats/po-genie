@@ -23,9 +23,6 @@ importers:
       gettext-parser:
         specifier: ^8.0.0
         version: 8.0.0
-      plural-forms:
-        specifier: 0.5.5
-        version: 0.5.5
       zod:
         specifier: ^3.24.2
         version: 3.25.76
@@ -950,9 +947,6 @@ packages:
   pify@4.0.1:
     resolution: {integrity: sha512-uB80kBFb/tfd68bVleG9T5GGsGPjJrLAUpR5PZIrhBnIaRTQRjqdJSsIKkOP6OAIFbj7GOrcudc5pNjZ+geV2g==}
     engines: {node: '>=6'}
-
-  plural-forms@0.5.5:
-    resolution: {integrity: sha512-rJw4xp22izsfJOVqta5Hyvep2lR3xPkFUtj7dyQtpf/FbxUiX7PQCajTn2EHDRylizH5N/Uqqodfdu22I0ju+g==}
 
   postcss@8.5.8:
     resolution: {integrity: sha512-OW/rX8O/jXnm82Ey1k44pObPtdblfiuWnrd8X7GJ7emImCOstunGbXUpp7HdBrFQX6rJzn3sPT397Wp5aCwCHg==}
@@ -2065,8 +2059,6 @@ snapshots:
   picomatch@4.0.3: {}
 
   pify@4.0.1: {}
-
-  plural-forms@0.5.5: {}
 
   postcss@8.5.8:
     dependencies:

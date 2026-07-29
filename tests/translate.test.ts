@@ -160,7 +160,7 @@ describe('translateFile', () => {
 
     const headers = readHeaders(result.output)
     expect(headers.Language).toBe('nl_NL')
-    expect(headers['Plural-Forms']).toBe('nplurals = 2; plural = (n != 1);')
+    expect(headers['Plural-Forms']).toBe('nplurals=2; plural=(n != 1);')
   })
 
   it('sets Polish metadata on the normal translated save path and preserves other headers', async () => {
@@ -177,7 +177,7 @@ describe('translateFile', () => {
     const headers = readHeaders(result.output)
     expect(headers.Language).toBe('pl_PL')
     expect(headers['Plural-Forms']).toBe(
-      'nplurals = 3; plural = (n == 1 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2);',
+      'nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);',
     )
     expect(headers['Project-Id-Version']).toBe('po-genie test')
   })
@@ -386,7 +386,7 @@ msgstr "Opslaan"
 
     const headers = readHeaders(result.output)
     expect(headers.Language).toBe('nl_NL')
-    expect(headers['Plural-Forms']).toBe('nplurals = 2; plural = (n != 1);')
+    expect(headers['Plural-Forms']).toBe('nplurals=2; plural=(n != 1);')
     expect(headers['Project-Id-Version']).toBe('po-genie test')
   })
 

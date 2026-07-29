@@ -134,7 +134,7 @@ describe('loadPO', () => {
 
     const headers = readHeaders(out)
     expect(headers.Language).toBe('nl_NL')
-    expect(headers['Plural-Forms']).toBe('nplurals = 2; plural = (n != 1);')
+    expect(headers['Plural-Forms']).toBe('nplurals=2; plural=(n != 1);')
     expect(headers['Project-Id-Version']).toBe('po-genie test')
     expect(headers['Content-Type']).toBe('text/plain; charset=utf-8')
   })
@@ -151,7 +151,7 @@ describe('loadPO', () => {
     const headers = readHeaders(out)
     expect(headers.Language).toBe('pl_PL')
     expect(headers['Plural-Forms']).toBe(
-      'nplurals = 3; plural = (n == 1 ? 0 : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 10 || n % 100 >= 20) ? 1 : 2);',
+      'nplurals=3; plural=(n==1 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);',
     )
     expect(headers['Project-Id-Version']).toBe('po-genie test')
   })
@@ -168,9 +168,31 @@ describe('loadPO', () => {
     const headers = readHeaders(out)
     expect(headers.Language).toBe('fr_FR')
     expect(headers['Plural-Forms']).toBe(
-      'nplurals = 2; plural = (n <= -2 || n >= 2);',
+      'nplurals=2; plural=(n > 1);',
     )
     expect(headers['Project-Id-Version']).toBe('po-genie test')
+  })
+
+  it('preserves the distinct GNU gettext rules for Brazilian and European Portuguese', () => {
+    const cases = [
+      ['pt_BR', 'nplurals=2; plural=(n > 1);'],
+      ['pt_PT', 'nplurals=2; plural=(n != 1);'],
+    ] as const
+
+    for (const [locale, pluralForms] of cases) {
+      const file = join(tmpDir, `messages-${locale}.pot`)
+      const out = join(tmpDir, `messages-${locale}.po`)
+      writeFileSync(file, POT_WITH_EMPTY_LANGUAGE)
+
+      const po = loadPO(file)
+      po.setLocale(locale)
+      po.save(out)
+
+      const headers = readHeaders(out)
+      expect(headers.Language).toBe(locale)
+      expect(headers['Plural-Forms']).toBe(pluralForms)
+      expect(headers['Project-Id-Version']).toBe('po-genie test')
+    }
   })
 
   it('rejects unsupported locales before an output file can be replaced', () => {
