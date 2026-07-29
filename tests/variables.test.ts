@@ -201,6 +201,36 @@ describe('protected immutable fragments', () => {
     expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
   })
 
+  it('leaves escaped backticks translatable while protecting an unescaped code span', () => {
+    const original = 'Keep \\`name\\` translatable but protect `command`.'
+    const extracted = extractProtectedFragments(original)
+
+    expect(extracted.template).toBe(
+      'Keep \\`name\\` translatable but protect [IMM_0].',
+    )
+    expect(extracted.fragments).toEqual(['`command`'])
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
+  })
+
+  it('protects only a balanced Markdown destination and leaves its title translatable', () => {
+    const original = 'Read [docs](https://example.com/Foo_(bar) "Open documentation").'
+    const extracted = extractProtectedFragments(original)
+    const translated = 'Lees [documentatie]([IMM_0] "Documentatie openen").'
+
+    expect(extracted.template).toBe(
+      'Read [docs]([IMM_0] "Open documentation").',
+    )
+    expect(extracted.fragments).toEqual(['https://example.com/Foo_(bar)'])
+    expect(() => validateProtectedTokens(
+      extracted.template,
+      translated,
+      { locale: 'nl_NL', batch: 1, item: 1 },
+    )).not.toThrow()
+    expect(restoreProtectedFragments(translated, extracted)).toBe(
+      'Lees [documentatie](https://example.com/Foo_(bar) "Documentatie openen").',
+    )
+  })
+
   it('protects a complete HTML tag when quoted attributes contain closing brackets', () => {
     const original = 'Read <span title="a > b" data-note=\'c > d\'>this</span>.'
     const extracted = extractProtectedFragments(original)

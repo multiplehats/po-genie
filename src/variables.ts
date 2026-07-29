@@ -56,6 +56,14 @@ function runLength(source: string, start: number, character: string): number {
   return end - start
 }
 
+function isBackslashEscaped(source: string, index: number): boolean {
+  let backslashes = 0
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor--) {
+    backslashes++
+  }
+  return backslashes % 2 === 1
+}
+
 function inlineCodeEnd(source: string, start: number): number | undefined {
   const delimiterLength = runLength(source, start, '`')
   let cursor = start + delimiterLength
@@ -68,7 +76,11 @@ function inlineCodeEnd(source: string, start: number): number | undefined {
     }
 
     const candidateLength = runLength(source, cursor, '`')
-    if (candidateLength === delimiterLength && cursor > start + delimiterLength) {
+    if (
+      !isBackslashEscaped(source, cursor)
+      && candidateLength === delimiterLength
+      && cursor > start + delimiterLength
+    ) {
       return cursor + candidateLength
     }
     cursor += candidateLength
@@ -87,6 +99,9 @@ function markdownDestinationEnd(source: string, start: number): number | undefin
     if (character === '\\') {
       cursor++
       continue
+    }
+    if (/\s/.test(character) && depth === 0) {
+      return cursor > start ? cursor : undefined
     }
     if (character === '(') {
       depth++
@@ -156,7 +171,9 @@ function immutableFragmentSpans(source: string): FragmentSpan[] {
 
   for (let cursor = 0; cursor < source.length;) {
     let end: number | undefined
-    if (source[cursor] === '`') end = inlineCodeEnd(source, cursor)
+    if (source[cursor] === '`' && !isBackslashEscaped(source, cursor)) {
+      end = inlineCodeEnd(source, cursor)
+    }
     if (end === undefined) end = markdownDestinationEnd(source, cursor)
     if (end === undefined && source[cursor] === '<') end = htmlTagEnd(source, cursor)
     if (end === undefined && source[cursor] === 'h') end = standaloneUrlEnd(source, cursor)
