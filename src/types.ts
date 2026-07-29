@@ -17,6 +17,8 @@ export interface TranslateOptions {
   context?: string
   /** Number of translation jobs per AI request. Defaults to 40 */
   batchSize?: number
+  /** Maximum number of locale translations run at once. Defaults to 2 */
+  concurrency?: number
   /** Only translate required empty msgstr slots; preserve completed slots. Defaults to true */
   onlyMissing?: boolean
   /** Called after each batch with progress info */
@@ -53,4 +55,9 @@ export interface TranslateResult {
   /** PO catalog entries not selected; always zero for readme translation. */
   skipped: number
   usage: TokenUsage
+}
+
+/** Safe locale-level failure detail exposed by LocaleTranslationError. */
+export interface LocaleTranslationFailure {
+  locale: string
 }

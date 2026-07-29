@@ -46,7 +46,11 @@ import {
   createCheckpointIdentity,
   saveCheckpoint,
 } from '../src/checkpoint.js'
-import { translate, translateFile } from '../src/translate.js'
+import {
+  LocaleTranslationError,
+  translate,
+  translateFile,
+} from '../src/translate.js'
 
 const UNTRANSLATED_PO = `
 msgid ""
@@ -61,6 +65,15 @@ msgid "Cancel"
 msgstr ""
 
 msgid "Error"
+msgstr ""
+`.trim()
+
+const SINGLE_ENTRY_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "Save"
 msgstr ""
 `.trim()
 
@@ -205,6 +218,29 @@ function mockAI(responses: string[][]) {
       usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
     } as any
   })
+}
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+  reject: (reason: unknown) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function aiResponse(translation: string) {
+  return {
+    object: { translations: [translation] },
+    usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+  } as any
 }
 
 function expectDefaultUsageOnlyCheckpoint(output: string): void {
@@ -1252,6 +1288,189 @@ msgstr "Opslaan"
 })
 
 describe('translate with multiple locales', () => {
+  it.each([0, -1, 1.5, Number.NaN])(
+    'rejects invalid concurrency %s before input or provider work',
+    async (concurrency) => {
+      await expect(translate({
+        input: join(tmpDir, 'missing.pot'),
+        locale: ['nl_NL', 'de_DE'],
+        concurrency,
+        apiKey: 'test-key',
+      })).rejects.toThrow('concurrency must be a positive integer')
+
+      expect(createOpenRouter).not.toHaveBeenCalled()
+      expect(generateObject).not.toHaveBeenCalled()
+    },
+  )
+
+  it('allows concurrency 1 and never has more than one locale provider call in flight', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, SINGLE_ENTRY_PO)
+    const gates = [deferred<any>(), deferred<any>()]
+    const starts = [deferred<void>(), deferred<void>()]
+    let inFlight = 0
+    let maxInFlight = 0
+    vi.mocked(generateObject).mockImplementation(() => {
+      const callIndex = vi.mocked(generateObject).mock.calls.length - 1
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      starts[callIndex].resolve()
+      return gates[callIndex].promise.finally(() => {
+        inFlight--
+      })
+    })
+
+    const translation = translate({
+      input,
+      locale: ['nl_NL', 'de_DE'],
+      concurrency: 1,
+      apiKey: 'test-key',
+    })
+
+    await starts[0].promise
+    expect(generateObject).toHaveBeenCalledTimes(1)
+    gates[0].resolve(aiResponse('Opslaan'))
+    await starts[1].promise
+    expect(generateObject).toHaveBeenCalledTimes(2)
+    gates[1].resolve(aiResponse('Speichern'))
+
+    await expect(translation).resolves.toHaveLength(2)
+    expect(maxInFlight).toBe(1)
+  })
+
+  it('defaults to two globally concurrent locale jobs and preserves requested result order', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, SINGLE_ENTRY_PO)
+    const gates = [deferred<any>(), deferred<any>(), deferred<any>()]
+    const starts = [deferred<void>(), deferred<void>(), deferred<void>()]
+    let inFlight = 0
+    let maxInFlight = 0
+    vi.mocked(generateObject).mockImplementation(() => {
+      const callIndex = vi.mocked(generateObject).mock.calls.length - 1
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      starts[callIndex].resolve()
+      return gates[callIndex].promise.finally(() => {
+        inFlight--
+      })
+    })
+
+    const translation = translate({
+      input,
+      locale: ['nl_NL', 'de_DE', 'fr_FR'],
+      apiKey: 'test-key',
+    })
+
+    await Promise.all([starts[0].promise, starts[1].promise])
+    expect(generateObject).toHaveBeenCalledTimes(2)
+    gates[1].resolve(aiResponse('Speichern'))
+    await starts[2].promise
+    expect(generateObject).toHaveBeenCalledTimes(3)
+    gates[2].resolve(aiResponse('Enregistrer'))
+    gates[0].resolve(aiResponse('Opslaan'))
+
+    const results = await translation
+    expect(results.map(({ locale }) => locale)).toEqual(['nl_NL', 'de_DE', 'fr_FR'])
+    expect(maxInFlight).toBe(2)
+  })
+
+  it('awaits already-started success, stops new jobs, and throws safe partial results', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, SINGLE_ENTRY_PO)
+    const first = deferred<any>()
+    const second = deferred<any>()
+    const bothStarted = deferred<void>()
+    let started = 0
+    vi.mocked(generateObject).mockImplementation(() => {
+      const gate = started++ === 0 ? first : second
+      if (started === 2) bothStarted.resolve()
+      return gate.promise
+    })
+
+    let settled = false
+    const translation = translate({
+      input,
+      locale: ['nl_NL', 'de_DE', 'fr_FR', 'it_IT'],
+      concurrency: 2,
+      apiKey: 'sk-private-key',
+      context: 'private project context',
+    }).finally(() => {
+      settled = true
+    })
+
+    await bothStarted.promise
+    first.reject(Object.assign(new Error('provider echoed private project context'), {
+      statusCode: 400,
+    }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(generateObject).toHaveBeenCalledTimes(2)
+    second.resolve(aiResponse('Speichern'))
+
+    const error = await translation.catch((reason) => reason)
+    expect(error).toBeInstanceOf(LocaleTranslationError)
+    expect(error.successes.map(({ locale }: { locale: string }) => locale)).toEqual(['de_DE'])
+    expect(error.failures).toEqual([{ locale: 'nl_NL' }])
+    expect(error.unstartedLocales).toEqual(['fr_FR', 'it_IT'])
+    expect(generateObject).toHaveBeenCalledTimes(2)
+
+    const publicError = `${error.message}\n${JSON.stringify(error)}`
+    expect(publicError).not.toContain('private project context')
+    expect(publicError).not.toContain('sk-private-key')
+    expect(publicError).not.toContain('Save')
+    expect(publicError).not.toContain('provider echoed')
+  })
+
+  it('reports multiple concurrent locale failures and locale-tagged progress', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, SINGLE_ENTRY_PO)
+    const gates = [deferred<any>(), deferred<any>()]
+    const bothStarted = deferred<void>()
+    const progressLocales: string[] = []
+    let started = 0
+    vi.mocked(generateObject).mockImplementation(() => {
+      const gate = gates[started++]
+      if (started === 2) bothStarted.resolve()
+      return gate.promise
+    })
+
+    const translation = translate({
+      input,
+      locale: ['nl_NL', 'de_DE', 'fr_FR'],
+      concurrency: 2,
+      apiKey: 'test-key',
+      onProgress: ({ locale }) => progressLocales.push(locale),
+    })
+
+    await bothStarted.promise
+    gates[0].reject(Object.assign(new Error('first failure'), { statusCode: 400 }))
+    gates[1].reject(Object.assign(new Error('second failure'), { statusCode: 400 }))
+
+    const error = await translation.catch((reason) => reason)
+    expect(error).toBeInstanceOf(LocaleTranslationError)
+    expect(error.failures).toEqual([{ locale: 'nl_NL' }, { locale: 'de_DE' }])
+    expect(error.successes).toEqual([])
+    expect(error.unstartedLocales).toEqual(['fr_FR'])
+    expect(progressLocales).toEqual([])
+  })
+
+  it('tags progress from each successfully completed concurrent locale', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, SINGLE_ENTRY_PO)
+    mockAI([['Opslaan'], ['Speichern']])
+    const progressLocales: string[] = []
+
+    await translate({
+      input,
+      locale: ['nl_NL', 'de_DE'],
+      concurrency: 2,
+      apiKey: 'test-key',
+      onProgress: ({ locale }) => progressLocales.push(locale),
+    })
+
+    expect(progressLocales).toEqual(['nl_NL', 'de_DE'])
+  })
+
   it('keeps an explicit output as the exact file path for one locale', async () => {
     const input = join(tmpDir, 'messages.pot')
     const output = join(tmpDir, 'custom.po')

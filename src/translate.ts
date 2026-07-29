@@ -23,14 +23,51 @@ import type { POEntry } from './po.js'
 import { parseReadme } from './readme.js'
 import type { ReadmeSegment } from './readme.js'
 import { retryTransientProviderCall } from './retry.js'
-import type { TranslateOptions, TranslateResult, TokenUsage } from './types.js'
+import type {
+  LocaleTranslationFailure,
+  TranslateOptions,
+  TranslateResult,
+  TokenUsage,
+} from './types.js'
 
 const DEFAULT_MODEL = 'anthropic/claude-3.5-haiku'
 const DEFAULT_BATCH_SIZE = 40
+const DEFAULT_CONCURRENCY = 2
 
 function validateBatchSize(batchSize: number): void {
   if (!Number.isFinite(batchSize) || !Number.isInteger(batchSize) || batchSize <= 0) {
     throw new Error('batchSize must be a positive integer')
+  }
+}
+
+function validateConcurrency(concurrency: number): void {
+  if (!Number.isFinite(concurrency) || !Number.isInteger(concurrency) || concurrency <= 0) {
+    throw new Error('concurrency must be a positive integer')
+  }
+}
+
+/**
+ * Thrown after all started locale translations settle when at least one fails.
+ *
+ * Provider errors are intentionally omitted so callers can safely inspect and
+ * report partial outcomes without exposing request or response content.
+ */
+export class LocaleTranslationError extends Error {
+  readonly successes: TranslateResult[]
+  readonly failures: LocaleTranslationFailure[]
+  readonly unstartedLocales: string[]
+
+  constructor(
+    successes: TranslateResult[],
+    failures: LocaleTranslationFailure[],
+    unstartedLocales: string[],
+  ) {
+    const failedLocales = failures.map(({ locale }) => locale).join(', ')
+    super(`Translation failed for locale${failures.length === 1 ? '' : 's'}: ${failedLocales}`)
+    this.name = 'LocaleTranslationError'
+    this.successes = [...successes]
+    this.failures = failures.map(({ locale }) => ({ locale }))
+    this.unstartedLocales = [...unstartedLocales]
   }
 }
 
@@ -482,6 +519,9 @@ async function translateReadmeFile(
 export async function translateFile(
   options: TranslateOptions & { locale: string },
 ): Promise<TranslateResult> {
+  validateConcurrency(options.concurrency === undefined
+    ? DEFAULT_CONCURRENCY
+    : options.concurrency)
   validateBatchSize(options.batchSize === undefined ? DEFAULT_BATCH_SIZE : options.batchSize)
 
   const ext = extname(options.input).toLowerCase()
@@ -752,5 +792,48 @@ export async function translateFile(
 }
 
 export async function translate(options: TranslateOptions): Promise<TranslateResult[]> {
-  return Promise.all(planTranslationJobs(options).map((job) => translateFile(job)))
+  const concurrency = options.concurrency === undefined
+    ? DEFAULT_CONCURRENCY
+    : options.concurrency
+  validateConcurrency(concurrency)
+
+  const jobs = planTranslationJobs(options)
+  const results: Array<TranslateResult | undefined> = new Array(jobs.length)
+  const failures: Array<LocaleTranslationFailure | undefined> = new Array(jobs.length)
+  let nextIndex = 0
+  let failureKnown = false
+
+  async function worker(): Promise<void> {
+    while (!failureKnown) {
+      const index = nextIndex
+      if (index >= jobs.length) return
+      nextIndex++
+
+      try {
+        results[index] = await translateFile(jobs[index])
+      } catch {
+        failures[index] = { locale: jobs[index].locale }
+        failureKnown = true
+      }
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, jobs.length) },
+    () => worker(),
+  )
+  await Promise.all(workers)
+
+  const localeFailures = failures.filter(
+    (failure): failure is LocaleTranslationFailure => failure !== undefined,
+  )
+  if (localeFailures.length > 0) {
+    const successes = results.filter(
+      (result): result is TranslateResult => result !== undefined,
+    )
+    const unstartedLocales = jobs.slice(nextIndex).map(({ locale }) => locale)
+    throw new LocaleTranslationError(successes, localeFailures, unstartedLocales)
+  }
+
+  return results as TranslateResult[]
 }

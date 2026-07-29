@@ -1,13 +1,29 @@
 import 'dotenv/config'
 import { defineCommand, runMain } from 'citty'
-import { translate } from './translate.js'
-import type { Progress } from './types.js'
+import { LocaleTranslationError, translate } from './translate.js'
+import type { Progress, TranslateResult } from './types.js'
 
 export function parseBatchSize(value: string | undefined): number | undefined {
   return value === undefined ? undefined : Number(value)
 }
 
-const main = defineCommand({
+export function parseConcurrency(value: string | undefined): number | undefined {
+  return value === undefined ? undefined : Number(value)
+}
+
+function reportResult(result: TranslateResult): void {
+  const { usage } = result
+  const costStr = usage.estimatedCostUsd !== undefined
+    ? `  ~$${usage.estimatedCostUsd.toFixed(4)}`
+    : ''
+
+  console.log(
+    `✓ ${result.locale}  →  ${result.output}` +
+      `  (${result.translated} translated, ${result.skipped} skipped)${costStr}`,
+  )
+}
+
+export const main = defineCommand({
   meta: {
     name: 'po-genie',
     version: __PO_GENIE_VERSION__,
@@ -45,6 +61,10 @@ const main = defineCommand({
       type: 'string',
       description: 'Strings per AI request (default: 40)',
     },
+    concurrency: {
+      type: 'string',
+      description: 'Maximum locale translations run at once (default: 2)',
+    },
     'all-strings': {
       type: 'boolean',
       description: 'Re-translate all strings, not just missing ones',
@@ -54,6 +74,7 @@ const main = defineCommand({
   async run({ args }) {
     const locales = args.locale.split(',').map((l: string) => l.trim())
     const batchSize = parseBatchSize(args['batch-size'])
+    const concurrency = parseConcurrency(args.concurrency)
 
     let lastLocale = ''
 
@@ -76,6 +97,7 @@ const main = defineCommand({
         model: args.model,
         context: args.context,
         batchSize,
+        concurrency,
         onlyMissing: !args['all-strings'],
         onProgress,
       })
@@ -96,14 +118,7 @@ const main = defineCommand({
           costKnown = true
         }
 
-        const costStr = usage.estimatedCostUsd !== undefined
-          ? `  ~$${usage.estimatedCostUsd.toFixed(4)}`
-          : ''
-
-        console.log(
-          `✓ ${result.locale}  →  ${result.output}` +
-            `  (${result.translated} translated, ${result.skipped} skipped)${costStr}`,
-        )
+        reportResult(result)
       }
 
       if (results.length > 1 || costKnown) {
@@ -113,8 +128,19 @@ const main = defineCommand({
         console.log(`\n  ${tokensStr}${costStr}`)
       }
     } catch (err) {
-      console.error('\nError:', err instanceof Error ? err.message : err)
-      process.exit(1)
+      if (err instanceof LocaleTranslationError) {
+        console.log('\n')
+        for (const result of err.successes) reportResult(result)
+        for (const { locale } of err.failures) {
+          console.error(`✗ ${locale}  translation failed`)
+        }
+        for (const locale of err.unstartedLocales) {
+          console.error(`– ${locale}  not started`)
+        }
+      } else {
+        console.error('\nError:', err instanceof Error ? err.message : err)
+      }
+      process.exitCode = 1
     }
   },
 })
