@@ -307,6 +307,7 @@ Rules:
 
 async function translateReadmeFile(
   options: TranslateOptions & { locale: string },
+  sourceBytes: Buffer,
 ): Promise<TranslateResult> {
   const {
     input,
@@ -321,7 +322,6 @@ async function translateReadmeFile(
   } = options
 
   const outputPath = resolveOutputPath(input, locale, output)
-  const sourceBytes = readFileSync(input)
   const readme = parseReadme(sourceBytes)
   const translatableSegments = readme.segments.filter(
     (s): s is ReadmeSegment & { type: 'translatable' } => s.type === 'translatable',
@@ -516,18 +516,14 @@ async function translateReadmeFile(
   }
 }
 
-export async function translateFile(
+async function translateFileFromSource(
   options: TranslateOptions & { locale: string },
+  sourceBytes: Buffer,
 ): Promise<TranslateResult> {
-  validateConcurrency(options.concurrency === undefined
-    ? DEFAULT_CONCURRENCY
-    : options.concurrency)
-  validateBatchSize(options.batchSize === undefined ? DEFAULT_BATCH_SIZE : options.batchSize)
-
   const ext = extname(options.input).toLowerCase()
 
   if (ext === '.txt') {
-    return translateReadmeFile(options)
+    return translateReadmeFile(options, sourceBytes)
   }
 
   const {
@@ -543,7 +539,6 @@ export async function translateFile(
   } = options
 
   const outputPath = resolveOutputPath(input, locale, output)
-  const sourceBytes = readFileSync(input)
   const po = parsePO(sourceBytes)
   const localeMetadata = localeMetadataFor(locale)
   const pluralFormCount = localeMetadata.pluralFormCount
@@ -791,13 +786,26 @@ export async function translateFile(
   }
 }
 
+export async function translateFile(
+  options: TranslateOptions & { locale: string },
+): Promise<TranslateResult> {
+  validateConcurrency(options.concurrency === undefined
+    ? DEFAULT_CONCURRENCY
+    : options.concurrency)
+  validateBatchSize(options.batchSize === undefined ? DEFAULT_BATCH_SIZE : options.batchSize)
+
+  return translateFileFromSource(options, readFileSync(options.input))
+}
+
 export async function translate(options: TranslateOptions): Promise<TranslateResult[]> {
   const concurrency = options.concurrency === undefined
     ? DEFAULT_CONCURRENCY
     : options.concurrency
   validateConcurrency(concurrency)
+  validateBatchSize(options.batchSize === undefined ? DEFAULT_BATCH_SIZE : options.batchSize)
 
   const jobs = planTranslationJobs(options)
+  const sourceBytes = readFileSync(options.input)
   const results: Array<TranslateResult | undefined> = new Array(jobs.length)
   const failures: Array<LocaleTranslationFailure | undefined> = new Array(jobs.length)
   let nextIndex = 0
@@ -810,7 +818,7 @@ export async function translate(options: TranslateOptions): Promise<TranslateRes
       nextIndex++
 
       try {
-        results[index] = await translateFile(jobs[index])
+        results[index] = await translateFileFromSource(jobs[index], Buffer.from(sourceBytes))
       } catch {
         failures[index] = { locale: jobs[index].locale }
         failureKnown = true

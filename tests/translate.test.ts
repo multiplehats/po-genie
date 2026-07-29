@@ -1338,6 +1338,35 @@ describe('translate with multiple locales', () => {
     expect(maxInFlight).toBe(1)
   })
 
+  it('uses one immutable source snapshot when an earlier locale overwrites the input in place', async () => {
+    const input = join(tmpDir, 'messages-nl_NL.po')
+    writeFileSync(input, SINGLE_ENTRY_PO)
+    mockAI([['Opslaan'], ['Speichern']])
+
+    const results = await translate({
+      input,
+      locale: ['nl_NL', 'de_DE'],
+      concurrency: 1,
+      apiKey: 'test-key',
+    })
+
+    expect(generateObject).toHaveBeenCalledTimes(2)
+    expect(
+      vi.mocked(generateObject).mock.calls.map(([request]) =>
+        JSON.parse(request.messages![1].content as string),
+      ),
+    ).toEqual([
+      [{ template: 'Save' }],
+      [{ template: 'Save' }],
+    ])
+    expect(vi.mocked(parsePO)).toHaveBeenCalledTimes(2)
+    expect(
+      vi.mocked(parsePO).mock.calls.map(([source]) => Buffer.from(source).toString('utf8')),
+    ).toEqual([SINGLE_ENTRY_PO, SINGLE_ENTRY_PO])
+    expect(results.map(({ locale }) => locale)).toEqual(['nl_NL', 'de_DE'])
+    expect(readFileSync(results[1].output, 'utf8')).toContain('msgstr "Speichern"')
+  })
+
   it('defaults to two globally concurrent locale jobs and preserves requested result order', async () => {
     const input = join(tmpDir, 'messages.pot')
     writeFileSync(input, SINGLE_ENTRY_PO)
