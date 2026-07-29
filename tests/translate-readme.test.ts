@@ -61,13 +61,25 @@ function countTranslatable(): number {
   return readme.segments.filter((s) => s.type === 'translatable').length
 }
 
+function fixtureTranslations(prefix: string): string[] {
+  const readme = loadReadme(README_FIXTURE)
+  return readme.segments
+    .filter((segment) => segment.type === 'translatable')
+    .map((segment, index) => {
+      const protectedToken = segment.content.includes('`/wp-content/plugins/`')
+        ? ' [IMM_0]'
+        : ''
+      return `${prefix}-${index}${protectedToken}`
+    })
+}
+
 describe('translateFile with readme', () => {
   it('translates a readme and writes output', async () => {
     const input = join(tmpDir, 'readme.txt')
     writeFileSync(input, readFileSync(README_FIXTURE))
 
     const total = countTranslatable()
-    const translations = Array.from({ length: total }, (_, i) => `translated-${i}`)
+    const translations = fixtureTranslations('translated')
     mockAI([translations])
 
     const result = await translateFile({
@@ -85,7 +97,7 @@ describe('translateFile with readme', () => {
     writeFileSync(input, readFileSync(README_FIXTURE))
 
     const total = countTranslatable()
-    mockAI([Array.from({ length: total }, (_, i) => `translated-${i}`)])
+    mockAI([fixtureTranslations('translated')])
 
     const result = await translateFile({
       input,
@@ -102,7 +114,7 @@ describe('translateFile with readme', () => {
     writeFileSync(input, readFileSync(README_FIXTURE))
 
     const total = countTranslatable()
-    mockAI([Array.from({ length: total }, (_, i) => `translated-${i}`)])
+    mockAI([fixtureTranslations('translated')])
 
     const result = await translateFile({
       input,
@@ -119,7 +131,7 @@ describe('translateFile with readme', () => {
     writeFileSync(input, readFileSync(README_FIXTURE))
 
     const total = countTranslatable()
-    mockAI([Array.from({ length: total }, (_, i) => `translated-${i}`)])
+    mockAI([fixtureTranslations('translated')])
 
     const progress: number[] = []
     await translateFile({
@@ -169,6 +181,92 @@ describe('translateFile with readme', () => {
     expect(saved).toContain('%s')
     expect(saved).toContain('%1$s')
     expect(saved).toContain('%2$d')
+  })
+
+  it.each([
+    ['URL', 'Visit https://example.com/docs for help.', 'Bezoek https://example.nl/docs voor hulp.'],
+    ['inline code', 'Run `tool --help` for help.', 'Voer `tool hulp` uit voor hulp.'],
+    ['HTML tag', 'Read <strong>this</strong> carefully.', 'Lees <b>dit</b> zorgvuldig.'],
+  ])('rejects an altered %s without saving or reporting progress', async (_case, source, response) => {
+    const content = [
+      '=== Protected Plugin ===',
+      'Contributors: test',
+      '',
+      source,
+      '',
+    ].join('\n')
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, content)
+    const progress: number[] = []
+    mockAI([[response]])
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      onProgress: (event) => progress.push(event.translated),
+    })).rejects.toThrow(/nl_NL.*batch 1.*item 1.*IMM/)
+
+    expect(existsSync(output)).toBe(false)
+    expect(progress).toEqual([])
+  })
+
+  it('translates a Markdown label while preserving its destination exactly', async () => {
+    const content = [
+      '=== Link Plugin ===',
+      'Contributors: test',
+      '',
+      'Read [the docs](https://example.com/docs).',
+      '',
+    ].join('\n')
+    const input = join(tmpDir, 'readme.txt')
+    writeFileSync(input, content)
+    mockAI([['Lees [de documentatie]([IMM_0]).']])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    const saved = readFileSync(result.output, 'utf-8')
+    expect(saved).toContain('Lees [de documentatie](https://example.com/docs).')
+  })
+
+  it('validates every readme item before mutating the batch', async () => {
+    const content = [
+      '=== Atomic Plugin ===',
+      'Contributors: test',
+      '',
+      'Visit https://example.com.',
+      '',
+      '== Description ==',
+      '',
+      'Run `tool --help`.',
+      '',
+    ].join('\n')
+    const input = join(tmpDir, 'readme.txt')
+    writeFileSync(input, content)
+
+    const originalLoadReadme = vi.mocked(loadReadme).getMockImplementation()
+    if (!originalLoadReadme) throw new Error('Expected loadReadme mock implementation')
+    const readme = originalLoadReadme(input)
+    vi.mocked(loadReadme).mockReturnValueOnce(readme)
+    mockAI([['Bezoek [IMM_0].', 'Voer hulp uit.']])
+
+    await expect(translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })).rejects.toThrow(/item 2.*IMM_0/)
+
+    expect(
+      readme.segments
+        .filter((segment) => segment.type === 'translatable')
+        .every((segment) => segment.translated === undefined),
+    ).toBe(true)
   })
 
   it('sends readme context as metadata without modifying translated text', async () => {
@@ -228,7 +326,7 @@ describe('translateFile with readme', () => {
     writeFileSync(input, readFileSync(README_FIXTURE))
 
     const total = countTranslatable()
-    const translations = Array.from({ length: total }, (_, i) => `vertaald-${i}`)
+    const translations = fixtureTranslations('vertaald')
     mockAI([translations])
 
     const result = await translateFile({
@@ -261,7 +359,7 @@ describe('translateFile with readme', () => {
     const input = join(tmpDir, 'readme.txt')
     writeFileSync(input, readFileSync(README_FIXTURE))
     const total = countTranslatable()
-    mockAI(Array.from({ length: total }, (_, i) => [`translated-${i}`]))
+    mockAI(fixtureTranslations('translated').map((translation) => [translation]))
     const translation = translateFile({
       input,
       locale: 'nl_NL',
@@ -279,10 +377,9 @@ describe('translate readme with multiple locales', () => {
     const input = join(tmpDir, 'readme.txt')
     writeFileSync(input, readFileSync(README_FIXTURE))
 
-    const total = countTranslatable()
     mockAI([
-      Array.from({ length: total }, (_, i) => `Nederlands-${i}`),
-      Array.from({ length: total }, (_, i) => `Deutsch-${i}`),
+      fixtureTranslations('Nederlands'),
+      fixtureTranslations('Deutsch'),
     ])
 
     const results = await translate({ input, locale: ['nl_NL', 'de_DE'], apiKey: 'test-key' })
@@ -303,10 +400,9 @@ describe('translate readme with multiple locales', () => {
     mkdirSync(output)
     writeFileSync(input, readFileSync(README_FIXTURE))
 
-    const total = countTranslatable()
     mockAI([
-      Array.from({ length: total }, (_, i) => `Nederlands-${i}`),
-      Array.from({ length: total }, (_, i) => `Deutsch-${i}`),
+      fixtureTranslations('Nederlands'),
+      fixtureTranslations('Deutsch'),
     ])
 
     const results = await translate({

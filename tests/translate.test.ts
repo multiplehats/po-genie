@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import gettextParser from 'gettext-parser'
@@ -52,6 +59,15 @@ msgid "You have {{credits}} {{credits_currency}}"
 msgstr ""
 
 msgid "Earn %s points"
+msgstr ""
+`.trim()
+
+const WITH_PROTECTED_FRAGMENTS_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "Read <strong>[the docs](https://example.com/docs)</strong> with \`tool --help\`."
 msgstr ""
 `.trim()
 
@@ -257,6 +273,49 @@ describe('translateFile', () => {
     expect(saved).toContain('{{credits}}')
     expect(saved).toContain('{{credits_currency}}')
     expect(saved).toContain('%s')
+  })
+
+  it('protects and restores immutable source fragments while translating a Markdown label', async () => {
+    const input = join(tmpDir, 'protected.po')
+    writeFileSync(input, WITH_PROTECTED_FRAGMENTS_PO)
+    mockAI([[
+      'Lees [IMM_0][de documentatie]([IMM_1])[IMM_2] met [IMM_3].',
+    ]])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    const request = vi.mocked(generateObject).mock.calls[0][0]
+    expect(JSON.parse(request.messages![1].content as string)).toEqual([
+      { template: 'Read [IMM_0][the docs]([IMM_1])[IMM_2] with [IMM_3].' },
+    ])
+
+    const savedEntry = loadPO(result.output).entries[0]
+    expect(savedEntry.msgstr).toBe(
+      'Lees <strong>[de documentatie](https://example.com/docs)</strong> met `tool --help`.',
+    )
+  })
+
+  it('rejects an invalid token anywhere in a batch before writing output or reporting progress', async () => {
+    const input = join(tmpDir, 'vars.po')
+    const output = join(tmpDir, 'translated.po')
+    writeFileSync(input, WITH_VARS_PO)
+    mockAI([['Je hebt [VAR_0] [VAR_1]', 'Verdien punten']])
+    const progress: number[] = []
+
+    await expect(translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+      onProgress: (event) => progress.push(event.translated),
+    })).rejects.toThrow(/nl_NL.*batch 1.*item 2.*VAR_0/)
+
+    expect(existsSync(output)).toBe(false)
+    expect(progress).toEqual([])
   })
 
   it('sends gettext contexts as metadata and saves translations under their original contexts', async () => {

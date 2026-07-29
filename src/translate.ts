@@ -3,7 +3,13 @@ import { generateObject } from 'ai'
 import { z } from 'zod'
 import { existsSync, statSync } from 'node:fs'
 import { basename, dirname, extname, join, resolve } from 'node:path'
-import { extractVariables, restoreVariables } from './variables.js'
+import {
+  extractProtectedFragments,
+  extractVariables,
+  restoreProtectedFragments,
+  restoreVariables,
+  validateProtectedTokens,
+} from './variables.js'
 import { loadPO, localeMetadataFor, localeToLanguageName } from './po.js'
 import type { POEntry } from './po.js'
 import { loadReadme } from './readme.js'
@@ -60,7 +66,10 @@ interface TranslationRequestItem {
 interface TranslationJob {
   entry: POEntry
   formIndex: number
-  extracted: ReturnType<typeof extractVariables>
+  extracted: {
+    vars: string[]
+    immutable: ReturnType<typeof extractProtectedFragments>
+  }
   requestItem: TranslationRequestItem
 }
 
@@ -71,7 +80,7 @@ function buildSystemPrompt(targetLanguage: string, context?: string): string {
 Translate UI strings from English to ${targetLanguage}.${contextLine}
 
 Rules:
-- Preserve variable tokens like [VAR_0], [VAR_1], etc. exactly as-is — they are runtime placeholders
+- Preserve protected tokens like [VAR_0], [IMM_0], etc. exactly as-is
 - Preserve printf specifiers (%s, %d) if any remain untokenised
 - Keep HTML tags unchanged
 - Match the tone: concise for labels/buttons, natural for descriptions
@@ -197,7 +206,7 @@ Rules:
 - Preserve all markdown formatting (bold, italic, links, lists)
 - Keep URLs unchanged — do not translate URLs
 - Keep code references unchanged (e.g. file paths, function names, CSS classes)
-- Keep [VAR_0], [VAR_1] etc. placeholders exactly as-is
+- Keep [VAR_0], [IMM_0] etc. protected tokens exactly as-is
 - Return a JSON object with a "translations" array containing the translated strings in the same order`
 }
 
@@ -240,8 +249,12 @@ async function translateReadmeFile(
     return { locale, output: outputPath, translated: 0, skipped: 0, usage: emptyUsage }
   }
 
-  // Extract variables and build templates for each segment
-  const extracted = translatableSegments.map((seg) => extractVariables(seg.content))
+  // Extract variables and immutable fragments into protected templates.
+  const extracted = translatableSegments.map((seg) => {
+    const variables = extractVariables(seg.content)
+    const immutable = extractProtectedFragments(variables.template)
+    return { template: immutable.template, vars: variables.vars, immutable }
+  })
 
   const itemsWithContext = translatableSegments.map((seg, i) => {
     const context = seg.context
@@ -290,8 +303,24 @@ async function translateReadmeFile(
 
     for (let j = 0; j < indices.length; j++) {
       const entryIndex = indices[j]
-      const restored = restoreVariables(object.translations[j], extracted[entryIndex].vars)
-      translatableSegments[entryIndex].translated = restored
+      validateProtectedTokens(
+        extracted[entryIndex].template,
+        object.translations[j],
+        { locale, batch: batchIndex + 1, item: entryIndex + 1 },
+      )
+    }
+
+    const restoredBatch = indices.map((entryIndex, j) => {
+      const immutableRestored = restoreProtectedFragments(
+        object.translations[j],
+        extracted[entryIndex].immutable,
+      )
+      return restoreVariables(immutableRestored, extracted[entryIndex].vars)
+    })
+
+    for (let j = 0; j < indices.length; j++) {
+      const entryIndex = indices[j]
+      translatableSegments[entryIndex].translated = restoredBatch[j]
       translated++
     }
 
@@ -369,9 +398,23 @@ export async function translateFile(
       }
     }
 
-    const singularExtracted = extractVariables(entry.msgid)
-    const pluralExtracted = entry.msgid_plural
+    const singularVariables = extractVariables(entry.msgid)
+    const singularImmutable = extractProtectedFragments(singularVariables.template)
+    const singularExtracted = {
+      vars: singularVariables.vars,
+      immutable: singularImmutable,
+    }
+    const pluralVariables = entry.msgid_plural
       ? extractVariables(entry.msgid_plural)
+      : undefined
+    const pluralImmutable = pluralVariables
+      ? extractProtectedFragments(pluralVariables.template)
+      : undefined
+    const pluralExtracted = pluralVariables && pluralImmutable
+      ? {
+          vars: pluralVariables.vars,
+          immutable: pluralImmutable,
+        }
       : undefined
     const formCount = pluralExtracted ? pluralFormCount : 1
 
@@ -380,7 +423,7 @@ export async function translateFile(
 
       const extracted = formIndex === 0 ? singularExtracted : pluralExtracted!
       const requestItem: TranslationRequestItem = {
-        template: extracted.template,
+        template: extracted.immutable.template,
         ...(pluralExtracted
           ? {
               singularSource: entry.msgid,
@@ -435,9 +478,25 @@ export async function translateFile(
 
     for (let j = 0; j < indices.length; j++) {
       const job = translationJobs[indices[j]]
-      const restored = restoreVariables(result.translations[j], job.extracted.vars)
-      job.entry.msgstrs[job.formIndex] = restored
+      validateProtectedTokens(
+        job.requestItem.template,
+        result.translations[j],
+        { locale, batch: batchIndex + 1, item: indices[j] + 1 },
+      )
+    }
 
+    const restoredBatch = indices.map((jobIndex, j) => {
+      const job = translationJobs[jobIndex]
+      const immutableRestored = restoreProtectedFragments(
+        result.translations[j],
+        job.extracted.immutable,
+      )
+      return restoreVariables(immutableRestored, job.extracted.vars)
+    })
+
+    for (let j = 0; j < indices.length; j++) {
+      const job = translationJobs[indices[j]]
+      job.entry.msgstrs[job.formIndex] = restoredBatch[j]
       const remaining = (remainingJobs.get(job.entry) ?? 1) - 1
       remainingJobs.set(job.entry, remaining)
       if (remaining === 0) translated++

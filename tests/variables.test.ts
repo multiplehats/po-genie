@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { extractVariables, restoreVariables, hasVariables } from '../src/variables.js'
+import {
+  extractVariables,
+  restoreVariables,
+  hasVariables,
+  validateProtectedTokens,
+  extractProtectedFragments,
+  restoreProtectedFragments,
+} from '../src/variables.js'
 
 describe('extractVariables', () => {
   it('extracts handlebars-style variables {{var}}', () => {
@@ -72,6 +79,82 @@ describe('restoreVariables', () => {
   it('handles string with no tokens', () => {
     const result = restoreVariables('Geen variabelen', [])
     expect(result).toBe('Geen variabelen')
+  })
+})
+
+describe('validateProtectedTokens', () => {
+  it.each([
+    ['omitted', 'Vertaal [VAR_0]', 'Vertaling'],
+    ['duplicated', 'Vertaal [VAR_0]', 'Vertaling [VAR_0] [VAR_0]'],
+    ['renamed', 'Vertaal [VAR_0]', 'Vertaling [VAR_1]'],
+    ['invented', 'Vertaal zonder tokens', 'Vertaling [VAR_99]'],
+  ])('rejects %s protected tokens', (_case, source, translated) => {
+    expect(() => validateProtectedTokens(source, translated, {
+      locale: 'nl_NL',
+      batch: 2,
+      item: 3,
+    })).toThrow(/nl_NL.*batch 2.*item 3.*VAR_/)
+  })
+
+  it('allows protected tokens to be reordered', () => {
+    expect(() => validateProtectedTokens(
+      '[VAR_0] before [VAR_1]',
+      '[VAR_1] na [VAR_0]',
+      { locale: 'nl_NL', batch: 1, item: 1 },
+    )).not.toThrow()
+  })
+
+  it('requires repeated source tokens to retain their exact multiplicity', () => {
+    expect(() => validateProtectedTokens(
+      '[VAR_0] of [VAR_1] ([VAR_0] used)',
+      '[VAR_0] van [VAR_1] ([VAR_0] gebruikt)',
+      { locale: 'nl_NL', batch: 1, item: 1 },
+    )).not.toThrow()
+
+    expect(() => validateProtectedTokens(
+      '[VAR_0] of [VAR_1] ([VAR_0] used)',
+      '[VAR_0] van [VAR_1] gebruikt',
+      { locale: 'nl_NL', batch: 1, item: 1 },
+    )).toThrow(/VAR_0/)
+  })
+})
+
+describe('protected immutable fragments', () => {
+  it('extracts URLs, Markdown destinations, inline code, and HTML tags without protecting labels', () => {
+    const extracted = extractProtectedFragments(
+      'Read [the docs](https://example.com/docs) or `run --help` in <strong>your browser</strong> at https://example.org/path.',
+    )
+
+    expect(extracted.template).toBe(
+      'Read [the docs]([IMM_0]) or [IMM_1] in [IMM_2]your browser[IMM_3] at [IMM_4].',
+    )
+    expect(extracted.fragments).toEqual([
+      'https://example.com/docs',
+      '`run --help`',
+      '<strong>',
+      '</strong>',
+      'https://example.org/path',
+    ])
+  })
+
+  it('restores immutable fragments after translating a Markdown label', () => {
+    const extracted = extractProtectedFragments('Read [the docs](https://example.com/docs).')
+
+    expect(restoreProtectedFragments(
+      'Lees [de documentatie]([IMM_0]).',
+      extracted,
+    )).toBe('Lees [de documentatie](https://example.com/docs).')
+  })
+
+  it('uses collision-safe token IDs when source text contains an immutable token', () => {
+    const extracted = extractProtectedFragments(
+      'Keep [IMM_0] visible and visit https://example.com.',
+    )
+
+    expect(extracted.template).toBe('Keep [IMM_0] visible and visit [IMM1_0].')
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(
+      'Keep [IMM_0] visible and visit https://example.com.',
+    )
   })
 })
 
