@@ -69,7 +69,6 @@ function inlineCodeEnd(source: string, start: number): number | undefined {
   let cursor = start + delimiterLength
 
   while (cursor < source.length) {
-    if (source[cursor] === '\n') return undefined
     if (source[cursor] !== '`') {
       cursor++
       continue
@@ -90,6 +89,19 @@ function inlineCodeEnd(source: string, start: number): number | undefined {
 
 function markdownDestinationEnd(source: string, start: number): number | undefined {
   if (source.slice(start - 2, start) !== '](') return undefined
+
+  if (source[start] === '<') {
+    for (let cursor = start + 1; cursor < source.length; cursor++) {
+      const character = source[cursor]
+      if (character === '\n' || character === '<') return undefined
+      if (character === '\\') {
+        cursor++
+        continue
+      }
+      if (character === '>') return cursor + 1
+    }
+    return undefined
+  }
 
   let depth = 0
   for (let cursor = start; cursor < source.length; cursor++) {
@@ -137,11 +149,7 @@ function htmlTagEnd(source: string, start: number): number | undefined {
 }
 
 function standaloneUrlEnd(source: string, start: number): number | undefined {
-  const protocol = source.startsWith('https://', start)
-    ? 'https://'
-    : source.startsWith('http://', start)
-      ? 'http://'
-      : undefined
+  const protocol = /^https?:\/\//i.exec(source.slice(start, start + 8))?.[0]
   if (!protocol) return undefined
 
   let depth = 0
@@ -175,7 +183,12 @@ function immutableFragmentSpans(source: string): FragmentSpan[] {
     }
     if (end === undefined) end = markdownDestinationEnd(source, cursor)
     if (end === undefined && source[cursor] === '<') end = htmlTagEnd(source, cursor)
-    if (end === undefined && source[cursor] === 'h') end = standaloneUrlEnd(source, cursor)
+    if (
+      end === undefined
+      && (source[cursor] === 'h' || source[cursor] === 'H')
+    ) {
+      end = standaloneUrlEnd(source, cursor)
+    }
 
     if (end === undefined) {
       cursor++
@@ -281,8 +294,9 @@ export function restoreProtectedFragments(
  * Replace variable patterns with stable numeric tokens so the AI
  * doesn't accidentally translate or mangle them.
  *
- * Duplicate variables get the same token, so the AI only needs to
- * reproduce each token, not count occurrences.
+ * Duplicate variable values share token identity, reducing the distinct token
+ * vocabulary. Exact protected-token multiset validation still requires every
+ * occurrence.
  */
 export function extractVariables(str: string): Extracted {
   const vars: VariableValues = []

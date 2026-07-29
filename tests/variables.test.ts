@@ -192,6 +192,18 @@ describe('protected immutable fragments', () => {
     expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
   })
 
+  it('protects mixed-case HTTP schemes with balanced and punctuation boundaries', () => {
+    const original = 'Visit HTTP://Example.com/Foo_(bar), then hTtPs://Example.org/Path.'
+    const extracted = extractProtectedFragments(original)
+
+    expect(extracted.template).toBe('Visit [IMM_0], then [IMM_1].')
+    expect(extracted.fragments).toEqual([
+      'HTTP://Example.com/Foo_(bar)',
+      'hTtPs://Example.org/Path',
+    ])
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
+  })
+
   it('protects a code span containing smaller backtick runs', () => {
     const original = 'Use ``foo `bar` baz`` now.'
     const extracted = extractProtectedFragments(original)
@@ -221,6 +233,15 @@ describe('protected immutable fragments', () => {
     expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
   })
 
+  it('protects an inline code span across a CRLF line ending', () => {
+    const original = 'Use ``first `part`\r\nsecond line`` now.'
+    const extracted = extractProtectedFragments(original)
+
+    expect(extracted.template).toBe('Use [IMM_0] now.')
+    expect(extracted.fragments).toEqual(['``first `part`\r\nsecond line``'])
+    expect(restoreProtectedFragments(extracted.template, extracted)).toBe(original)
+  })
+
   it('protects only a balanced Markdown destination and leaves its title translatable', () => {
     const original = 'Read [docs](https://example.com/Foo_(bar) "Open documentation").'
     const extracted = extractProtectedFragments(original)
@@ -237,6 +258,25 @@ describe('protected immutable fragments', () => {
     )).not.toThrow()
     expect(restoreProtectedFragments(translated, extracted)).toBe(
       'Lees [documentatie](https://example.com/Foo_(bar) "Documentatie openen").',
+    )
+  })
+
+  it('protects an angle-bracket Markdown destination while leaving its title translatable', () => {
+    const original = 'Read [docs](<docs/my\\> file> "Open documentation").'
+    const extracted = extractProtectedFragments(original)
+    const translated = 'Lees [documentatie]([IMM_0] "Documentatie openen").'
+
+    expect(extracted.template).toBe(
+      'Read [docs]([IMM_0] "Open documentation").',
+    )
+    expect(extracted.fragments).toEqual(['<docs/my\\> file>'])
+    expect(() => validateProtectedTokens(
+      extracted.template,
+      translated,
+      { locale: 'nl_NL', batch: 1, item: 1 },
+    )).not.toThrow()
+    expect(restoreProtectedFragments(translated, extracted)).toBe(
+      'Lees [documentatie](<docs/my\\> file> "Documentatie openen").',
     )
   })
 
