@@ -105,7 +105,10 @@ describe('CLI concurrency', () => {
 
     providerWork.reject(new LocaleTranslationError(
       [result('de_DE', '/tmp/messages-de_DE.po')],
-      [{ locale: 'nl_NL' }],
+      [{
+        locale: 'nl_NL',
+        reason: 'AI returned 35 translations for 33 inputs',
+      }],
       ['fr_FR'],
     ))
     await run
@@ -116,7 +119,9 @@ describe('CLI concurrency', () => {
       expect.stringContaining('✓ de_DE'),
     )
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('✗ nl_NL'),
+      expect.stringContaining(
+        '✗ nl_NL  translation failed: AI returned 35 translations for 33 inputs',
+      ),
     )
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining('– fr_FR'),

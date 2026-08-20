@@ -131,8 +131,9 @@ export const main = defineCommand({
       if (err instanceof LocaleTranslationError) {
         console.log('\n')
         for (const result of err.successes) reportResult(result)
-        for (const { locale } of err.failures) {
-          console.error(`✗ ${locale}  translation failed`)
+        for (const { locale, reason } of err.failures) {
+          const reasonSuffix = reason === undefined ? '' : `: ${reason}`
+          console.error(`✗ ${locale}  translation failed${reasonSuffix}`)
         }
         for (const locale of err.unstartedLocales) {
           console.error(`– ${locale}  not started`)

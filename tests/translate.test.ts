@@ -724,6 +724,22 @@ msgstr ""
     expect(loadPO(input).entries[0].msgstrs).toEqual(['', ''])
   })
 
+  it('discards spurious empty response items before validating the translation count', async () => {
+    const input = join(tmpDir, 'messages-nl_NL.po')
+    writeFileSync(input, SINGLE_ENTRY_PO)
+    mockAI([['', 'Opslaan']])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    expect(result).toMatchObject({ translated: 1, skipped: 0 })
+    expect(loadPO(input).entries[0].msgstr).toBe('Opslaan')
+    expect(existsSync(checkpointPathForOutput(input))).toBe(false)
+  })
+
   it('leaves loaded plural slots untouched when protected-token validation rejects the batch', async () => {
     const input = join(tmpDir, 'positional.po')
     writeFileSync(input, POSITIONAL_PLURAL_PO)
@@ -1439,7 +1455,10 @@ describe('translate with multiple locales', () => {
     const error = await translation.catch((reason) => reason)
     expect(error).toBeInstanceOf(LocaleTranslationError)
     expect(error.successes.map(({ locale }: { locale: string }) => locale)).toEqual(['de_DE'])
-    expect(error.failures).toEqual([{ locale: 'nl_NL' }])
+    expect(error.failures).toEqual([{
+      locale: 'nl_NL',
+      reason: 'Provider request failed (HTTP 400)',
+    }])
     expect(error.unstartedLocales).toEqual(['fr_FR', 'it_IT'])
     expect(generateObject).toHaveBeenCalledTimes(2)
 
@@ -1477,7 +1496,10 @@ describe('translate with multiple locales', () => {
 
     const error = await translation.catch((reason) => reason)
     expect(error).toBeInstanceOf(LocaleTranslationError)
-    expect(error.failures).toEqual([{ locale: 'nl_NL' }, { locale: 'de_DE' }])
+    expect(error.failures).toEqual([
+      { locale: 'nl_NL', reason: 'Provider request failed (HTTP 400)' },
+      { locale: 'de_DE', reason: 'Provider request failed (HTTP 400)' },
+    ])
     expect(error.successes).toEqual([])
     expect(error.unstartedLocales).toEqual(['fr_FR'])
     expect(progressLocales).toEqual([])

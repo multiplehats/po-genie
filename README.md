@@ -261,14 +261,15 @@ try {
 } catch (error) {
   if (error instanceof LocaleTranslationError) {
     console.log(error.successes)        // complete TranslateResult objects
-    console.log(error.failures)         // Array<{ locale: string }>
+    console.log(error.failures)         // Array<{ locale: string, reason?: string }>
     console.log(error.unstartedLocales) // locale strings
   }
 }
 ```
 
-Failure details expose locale names rather than provider request or response
-content. Completed locale outputs remain usable.
+Failure details may include a safe validation summary or provider HTTP status.
+They never expose provider request or response content. Completed locale
+outputs remain usable.
 
 ### Checkpoints and output safety
 
