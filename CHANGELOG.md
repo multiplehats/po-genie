@@ -1,5 +1,11 @@
 # po-genie
 
+## 0.3.1
+
+### Patch Changes
+
+- Ignore spurious empty AI response items and show safe validation or HTTP-status details when a locale translation fails. ([#3](https://github.com/multiplehats/po-genie/pull/3))
+
 ## 0.3.0
 
 ### Minor Changes
