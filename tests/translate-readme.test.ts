@@ -715,6 +715,29 @@ describe('translateFile with readme', () => {
     expectDefaultUsageOnlyCheckpoint(output)
   })
 
+  it('discards spurious empty response items before translating readme segments', async () => {
+    const input = join(tmpDir, 'readme.txt')
+    const output = join(tmpDir, 'translated.txt')
+    writeFileSync(input, [
+      '=== Empty Item Plugin ===',
+      'Contributors: test',
+      '',
+      'Source segment.',
+      '',
+    ].join('\n'))
+    mockAI([['  ', 'Vertaald segment.']])
+
+    await translateFile({
+      input,
+      output,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    expect(readFileSync(output, 'utf8')).toContain('Vertaald segment.')
+    expect(existsSync(checkpointPathForOutput(output))).toBe(false)
+  })
+
   it('rejects an invented raw immutable fragment even when expected tokens are preserved', async () => {
     const content = [
       '=== Invented Fragment Plugin ===',

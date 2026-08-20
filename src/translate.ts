@@ -46,11 +46,49 @@ function validateConcurrency(concurrency: number): void {
   }
 }
 
+class TranslationResponseError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'TranslationResponseError'
+  }
+}
+
+function normalizeGeneratedTranslations(translations: string[]): string[] {
+  return translations.filter((translation) => translation.trim().length > 0)
+}
+
+function providerStatusCode(error: unknown): number | undefined {
+  const seen = new Set<unknown>()
+  let current = error
+
+  while (current && typeof current === 'object' && !seen.has(current)) {
+    seen.add(current)
+    const fields = current as Record<string, unknown>
+    const status = fields.statusCode ?? fields.status
+    if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599) {
+      return status
+    }
+    current = fields.cause
+  }
+
+  return undefined
+}
+
+function safeFailureReason(error: unknown): string | undefined {
+  if (error instanceof TranslationResponseError) return error.message
+
+  const statusCode = providerStatusCode(error)
+  return statusCode === undefined
+    ? undefined
+    : `Provider request failed (HTTP ${statusCode})`
+}
+
 /**
  * Thrown after all started locale translations settle when at least one fails.
  *
- * Provider errors are intentionally omitted so callers can safely inspect and
- * report partial outcomes without exposing request or response content.
+ * Provider request and response content is intentionally omitted so callers
+ * can safely inspect partial outcomes. Failures may include a safe validation
+ * summary or provider HTTP status.
  */
 export class LocaleTranslationError extends Error {
   readonly successes: TranslateResult[]
@@ -66,7 +104,10 @@ export class LocaleTranslationError extends Error {
     super(`Translation failed for locale${failures.length === 1 ? '' : 's'}: ${failedLocales}`)
     this.name = 'LocaleTranslationError'
     this.successes = [...successes]
-    this.failures = failures.map(({ locale }) => ({ locale }))
+    this.failures = failures.map(({ locale, reason }) => ({
+      locale,
+      ...(reason === undefined ? {} : { reason }),
+    }))
     this.unstartedLocales = [...unstartedLocales]
   }
 }
@@ -210,7 +251,7 @@ async function translateBatch(
   )
 
   return {
-    translations: object.translations,
+    translations: normalizeGeneratedTranslations(object.translations),
     promptTokens: usage.promptTokens,
     completionTokens: usage.completionTokens,
   }
@@ -459,9 +500,10 @@ async function translateReadmeFile(
       usage: knownUsage(modelId, promptTokens, completionTokens),
     })
 
-    if (object.translations.length !== items.length) {
-      throw new Error(
-        `AI returned ${object.translations.length} translations for ${items.length} inputs`,
+    const translations = normalizeGeneratedTranslations(object.translations)
+    if (translations.length !== items.length) {
+      throw new TranslationResponseError(
+        `AI returned ${translations.length} translations for ${items.length} inputs`,
       )
     }
 
@@ -469,14 +511,14 @@ async function translateReadmeFile(
       const job = batch[j]
       validateProtectedTokens(
         job.extracted.template,
-        object.translations[j],
+        translations[j],
         { locale, batch: batchIndex + 1, item: job.index + 1 },
       )
     }
 
     const restoredBatch = batch.map((job, j) => {
       const immutableRestored = restoreProtectedFragments(
-        object.translations[j],
+        translations[j],
         job.extracted.immutable,
       )
       return restoreVariables(immutableRestored, job.extracted.vars)
@@ -486,7 +528,7 @@ async function translateReadmeFile(
       batch[j].segment.translated = restoredBatch[j]
       translated++
       completedItemIds.push(batch[j].id)
-      checkpointTranslations[batch[j].id] = object.translations[j]
+      checkpointTranslations[batch[j].id] = translations[j]
     }
 
     saveCheckpoint(outputPath, checkpointIdentity, {
@@ -722,7 +764,7 @@ async function translateFileFromSource(
     })
 
     if (result.translations.length !== items.length) {
-      throw new Error(
+      throw new TranslationResponseError(
         `AI returned ${result.translations.length} translations for ${items.length} inputs`,
       )
     }
@@ -819,8 +861,12 @@ export async function translate(options: TranslateOptions): Promise<TranslateRes
 
       try {
         results[index] = await translateFileFromSource(jobs[index], Buffer.from(sourceBytes))
-      } catch {
-        failures[index] = { locale: jobs[index].locale }
+      } catch (error) {
+        const reason = safeFailureReason(error)
+        failures[index] = {
+          locale: jobs[index].locale,
+          ...(reason === undefined ? {} : { reason }),
+        }
         failureKnown = true
       }
     }

@@ -60,4 +60,6 @@ export interface TranslateResult {
 /** Safe locale-level failure detail exposed by LocaleTranslationError. */
 export interface LocaleTranslationFailure {
   locale: string
+  /** Safe diagnostic summary that never includes provider request or response content. */
+  reason?: string
 }
