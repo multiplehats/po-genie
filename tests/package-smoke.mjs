@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -8,20 +8,17 @@ const root = resolve(import.meta.dirname, '..')
 const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 
 function run(command, args, env) {
-  const outputDir = mkdtempSync(join(tmpdir(), 'po-genie-command-'))
-  const outputPath = join(outputDir, 'output')
-  const output = openSync(outputPath, 'w')
   const result = spawnSync(command, args, {
     cwd: root,
     env: { PATH: process.env.PATH, ...env },
-    stdio: ['ignore', output, output],
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
-  closeSync(output)
-  const text = readFileSync(outputPath, 'utf8')
-  rmSync(outputDir, { recursive: true, force: true })
+  const stdout = result.stdout ?? ''
+  const stderr = result.stderr ?? ''
   assert.ifError(result.error)
-  assert.equal(result.status, 0, `${command} ${args.join(' ')} failed:\n${text}`)
-  return text
+  assert.equal(result.status, 0, `${command} ${args.join(' ')} failed:\n${stdout}${stderr}`)
+  return stdout
 }
 
 const npmCache = mkdtempSync(join(tmpdir(), 'po-genie-npm-cache-'))
