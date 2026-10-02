@@ -1303,6 +1303,63 @@ msgstr "Opslaan"
   })
 })
 
+describe('translate failure reasons and plural fallback', () => {
+  it('reports a persistent schema mismatch after bounded retries', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+    vi.mocked(generateObject).mockRejectedValue(
+      Object.assign(new Error('No object generated: response did not match schema.'), {
+        name: 'AI_NoObjectGeneratedError',
+      }),
+    )
+
+    const error = await translate({
+      input,
+      locale: ['de_DE'],
+      apiKey: 'test-key',
+    }).catch((reason) => reason)
+
+    expect(error).toBeInstanceOf(LocaleTranslationError)
+    expect(error.failures).toEqual([{
+      locale: 'de_DE',
+      reason: 'AI response did not match the expected format',
+    }])
+    expect(generateObject).toHaveBeenCalledTimes(3)
+  })
+
+  it('reports an unsupported locale with guidance', async () => {
+    const input = join(tmpDir, 'messages.pot')
+    writeFileSync(input, UNTRANSLATED_PO)
+
+    const error = await translate({
+      input,
+      locale: ['xx_XX'],
+      apiKey: 'test-key',
+    }).catch((reason) => reason)
+
+    expect(error).toBeInstanceOf(LocaleTranslationError)
+    expect(error.failures[0].reason).toContain('Unsupported gettext plural rules for locale "xx_XX"')
+    expect(error.failures[0].reason).toContain('Plural-Forms')
+    expect(generateObject).not.toHaveBeenCalled()
+  })
+
+  it('translates a locale outside the registry using the catalog Plural-Forms header', async () => {
+    const input = join(tmpDir, 'messages-zh_CN.po')
+    writeFileSync(input, UNTRANSLATED_PO
+      .replace('"Language: nl_NL\\n"', '"Language: zh_CN\\n"\n"Plural-Forms: nplurals=1; plural=0;\\n"'))
+    vi.mocked(generateObject).mockResolvedValueOnce({
+      object: { translations: ['保存设置', '取消', '错误'] },
+      usage: { promptTokens: 100, completionTokens: 50, totalTokens: 150 },
+    } as any)
+
+    await expect(translateFile({ input, locale: 'zh_CN', apiKey: 'test-key' }))
+      .resolves.toMatchObject({ translated: 3 })
+
+    const headers = gettextParser.po.parse(readFileSync(input)).headers
+    expect(headers['Plural-Forms']).toBe('nplurals=1; plural=0;')
+  })
+})
+
 describe('translate with multiple locales', () => {
   it.each([0, -1, 1.5, Number.NaN])(
     'rejects invalid concurrency %s before input or provider work',

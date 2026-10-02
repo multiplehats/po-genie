@@ -11,7 +11,12 @@ import {
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import gettextParser from 'gettext-parser'
-import { loadPO, localeMetadataFor, localeToLanguageName } from '../src/po.js'
+import {
+  loadPO,
+  localeMetadataFor,
+  localeToLanguageName,
+  UnsupportedPluralRulesError,
+} from '../src/po.js'
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -368,6 +373,66 @@ describe('loadPO', () => {
       'Unsupported gettext plural rules for locale "xx_XX"',
     )
     expect(readFileSync(out, 'utf-8')).toBe('existing output')
+  })
+})
+
+function catalogWithHeaders(language: string, pluralForms: string): string {
+  return [
+    'msgid ""',
+    'msgstr ""',
+    '"Content-Type: text/plain; charset=UTF-8\\n"',
+    `"Language: ${language}\\n"`,
+    `"Plural-Forms: ${pluralForms}\\n"`,
+    '',
+    'msgid "File"',
+    'msgid_plural "Files"',
+    'msgstr[0] ""',
+    'msgstr[1] ""',
+  ].join('\n')
+}
+
+describe('catalog Plural-Forms fallback', () => {
+  it('uses the catalog header for a locale outside the built-in registry', () => {
+    const file = join(tmpDir, 'messages-zh_CN.po')
+    writeFileSync(file, catalogWithHeaders('zh_CN', 'nplurals=1; plural=0;'))
+
+    const po = loadPO(file)
+    po.setLocale('zh_CN')
+    po.save(file)
+
+    const headers = readHeaders(file)
+    expect(headers.Language).toBe('zh_CN')
+    expect(headers['Plural-Forms']).toBe('nplurals=1; plural=0;')
+  })
+
+  it('ignores a catalog header that belongs to a different locale', () => {
+    const file = join(tmpDir, 'messages.po')
+    writeFileSync(file, catalogWithHeaders('nl_NL', 'nplurals=1; plural=0;'))
+
+    const po = loadPO(file)
+    expect(() => po.setLocale('zh_CN')).toThrow(UnsupportedPluralRulesError)
+  })
+
+  it('rejects an invalid or template catalog header', () => {
+    const file = join(tmpDir, 'messages.po')
+    writeFileSync(file, catalogWithHeaders('zh_CN', 'nplurals=INTEGER; plural=EXPRESSION;'))
+
+    const po = loadPO(file)
+    expect(() => po.setLocale('zh_CN')).toThrow(
+      'Unsupported gettext plural rules for locale "zh_CN"',
+    )
+  })
+
+  it('prefers the built-in registry over a catalog header', () => {
+    const file = join(tmpDir, 'messages-de_DE.po')
+    writeFileSync(file, catalogWithHeaders('de_DE', 'nplurals=1; plural=0;'))
+
+    const po = loadPO(file)
+    po.setLocale('de_DE')
+    po.save(file)
+
+    expect(readHeaders(file)['Plural-Forms']).toBe('nplurals=2; plural=(n != 1);')
+    expect(localeMetadataFor('de_DE', 'nplurals=1; plural=0;').pluralFormCount).toBe(2)
   })
 })
 

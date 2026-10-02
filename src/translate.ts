@@ -18,11 +18,17 @@ import {
   restoreVariables,
   validateProtectedTokens,
 } from './variables.js'
-import { localeMetadataFor, localeToLanguageName, parsePO } from './po.js'
+import {
+  catalogPluralFormsFor,
+  localeMetadataFor,
+  localeToLanguageName,
+  parsePO,
+  UnsupportedPluralRulesError,
+} from './po.js'
 import type { POEntry } from './po.js'
 import { parseReadme } from './readme.js'
 import type { ReadmeSegment } from './readme.js'
-import { retryTransientProviderCall } from './retry.js'
+import { isNoObjectGeneratedError, retryTransientProviderCall } from './retry.js'
 import type {
   LocaleTranslationFailure,
   TranslateOptions,
@@ -76,6 +82,10 @@ function providerStatusCode(error: unknown): number | undefined {
 
 function safeFailureReason(error: unknown): string | undefined {
   if (error instanceof TranslationResponseError) return error.message
+  if (error instanceof UnsupportedPluralRulesError) return error.message
+  if (isNoObjectGeneratedError(error)) {
+    return 'AI response did not match the expected format'
+  }
 
   const statusCode = providerStatusCode(error)
   return statusCode === undefined
@@ -134,9 +144,24 @@ function estimateCost(modelId: string, promptTokens: number, completionTokens: n
   return (promptTokens / 1_000_000) * prices.input + (completionTokens / 1_000_000) * prices.output
 }
 
+/**
+ * Some models return the array JSON-encoded as a string
+ * (`{"translations": "[\"a\",\"b\"]"}`). Accept that shape instead of
+ * failing the whole batch; anything else still fails validation.
+ */
+function parseStringifiedArray(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : value
+  } catch {
+    return value
+  }
+}
+
 const translationsSchema = z.object({
   translations: z
-    .array(z.string())
+    .preprocess(parseStringifiedArray, z.array(z.string()))
     .describe('Translated strings in the same order as the input array'),
 })
 
@@ -582,7 +607,7 @@ async function translateFileFromSource(
 
   const outputPath = resolveOutputPath(input, locale, output)
   const po = parsePO(sourceBytes)
-  const localeMetadata = localeMetadataFor(locale)
+  const localeMetadata = localeMetadataFor(locale, catalogPluralFormsFor(po, locale))
   const pluralFormCount = localeMetadata.pluralFormCount
   po.setLocale(locale)
 

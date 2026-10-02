@@ -106,6 +106,20 @@ keep the requested locale order even when locale jobs finish out of order.
 If one locale fails, already-started jobs are allowed to settle, no new jobs
 are started, successful outputs are reported, and the CLI exits unsuccessfully.
 
+### Locales outside the built-in plural rules
+
+po-genie ships GNU gettext plural rules for the common locales. For any other
+locale (for example `zh_CN`, `ar`, `hi_IN`), give the input catalog a
+`Language` header for that locale and a valid `Plural-Forms` header, and
+po-genie uses it:
+
+```po
+"Language: zh_CN\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+```
+
+The built-in rule always wins for locales po-genie already knows.
+
 ## WordPress plugin & theme workflow
 
 If you use WP-CLI's `wp i18n` commands, po-genie fits naturally into your existing i18n workflow.
