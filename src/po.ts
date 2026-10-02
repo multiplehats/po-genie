@@ -16,6 +16,8 @@ export interface POEntry {
 
 export interface POFile {
   entries: POEntry[]
+  /** Read-only view of the catalog header fields */
+  readonly headers: Readonly<Record<string, string>>
   /** Set normalized target-language metadata before serializing */
   setLocale(locale: string): void
   /** Serialise back to .po format */
@@ -139,16 +141,20 @@ const GNU_GETTEXT_PLURAL_FORMS: Readonly<Record<string, string>> = Object.freeze
   ),
 )
 
-function pluralFormsForLocale(locale: string): string {
-  let ruleLocale = locale
-  let sourceHeader = GNU_GETTEXT_PLURAL_FORMS[ruleLocale]
-  while (!sourceHeader && ruleLocale.includes('_')) {
-    ruleLocale = ruleLocale.slice(0, ruleLocale.lastIndexOf('_'))
-    sourceHeader = GNU_GETTEXT_PLURAL_FORMS[ruleLocale]
+/** Thrown when no valid gettext plural rule is known for a target locale. */
+export class UnsupportedPluralRulesError extends Error {
+  constructor(locale: string) {
+    super(
+      `Unsupported gettext plural rules for locale "${locale}". ` +
+        'Add a valid "Language" and "Plural-Forms" header for this locale to the input file.',
+    )
+    this.name = 'UnsupportedPluralRulesError'
   }
-  if (!sourceHeader) {
-    throw new Error(`Unsupported gettext plural rules for locale "${locale}"`)
-  }
+}
+
+/** Validate and normalize a GNU gettext Plural-Forms header value. */
+function validPluralFormsHeader(sourceHeader: string | undefined): string | undefined {
+  if (!sourceHeader) return undefined
 
   const trimmedHeader = sourceHeader.trim()
   const header = trimmedHeader.endsWith(';') ? trimmedHeader : `${trimmedHeader};`
@@ -157,13 +163,31 @@ function pluralFormsForLocale(locale: string): string {
   )
   const expression = match?.[2]
 
-  // Reject source entries that are not valid GNU gettext C-style expressions.
+  // Reject entries that are not valid GNU gettext C-style expressions.
   if (
     !expression ||
     /===|!==/.test(expression) ||
     /[^n0-9\s%<>=!&|?:()+*/-]/.test(expression)
   ) {
-    throw new Error(`Unsupported gettext plural rules for locale "${locale}"`)
+    return undefined
+  }
+
+  return header
+}
+
+function pluralFormsForLocale(locale: string, fallbackHeader?: string): string {
+  let ruleLocale = locale
+  let sourceHeader = GNU_GETTEXT_PLURAL_FORMS[ruleLocale]
+  while (!sourceHeader && ruleLocale.includes('_')) {
+    ruleLocale = ruleLocale.slice(0, ruleLocale.lastIndexOf('_'))
+    sourceHeader = GNU_GETTEXT_PLURAL_FORMS[ruleLocale]
+  }
+
+  const header = sourceHeader
+    ? validPluralFormsHeader(sourceHeader)
+    : validPluralFormsHeader(fallbackHeader)
+  if (!header) {
+    throw new UnsupportedPluralRulesError(locale)
   }
 
   return header
@@ -175,15 +199,21 @@ export interface LocaleMetadata {
   pluralFormCount: number
 }
 
-/** Resolve validated GNU gettext metadata for a target locale. */
-export function localeMetadataFor(locale: string): LocaleMetadata {
+/**
+ * Resolve validated GNU gettext metadata for a target locale.
+ *
+ * The built-in registry wins. For a locale it doesn't cover, a valid
+ * `fallbackPluralForms` header (normally the input catalog's own header for
+ * the same locale) is used instead.
+ */
+export function localeMetadataFor(locale: string, fallbackPluralForms?: string): LocaleMetadata {
   const normalizedLocale = normalizeLocale(locale)
-  const pluralForms = pluralFormsForLocale(normalizedLocale)
+  const pluralForms = pluralFormsForLocale(normalizedLocale, fallbackPluralForms)
   // pluralFormsForLocale has already validated this GNU nplurals header.
   const formCount = pluralForms.match(/^nplurals\s*=\s*([1-9]\d*)\s*;/)?.[1]
 
   if (!formCount) {
-    throw new Error(`Unsupported gettext plural rules for locale "${normalizedLocale}"`)
+    throw new UnsupportedPluralRulesError(normalizedLocale)
   }
 
   return {
@@ -191,6 +221,18 @@ export function localeMetadataFor(locale: string): LocaleMetadata {
     pluralForms,
     pluralFormCount: Number(formCount),
   }
+}
+
+/**
+ * The catalog's own Plural-Forms header, if its Language header names the
+ * given target locale. Used for locales outside the built-in registry.
+ */
+export function catalogPluralFormsFor(po: POFile, locale: string): string | undefined {
+  const language = po.headers.Language?.trim()
+  if (!language || normalizeLocale(language) !== normalizeLocale(locale)) {
+    return undefined
+  }
+  return po.headers['Plural-Forms']
 }
 
 export function loadPO(filePath: string): POFile {
@@ -229,10 +271,13 @@ export function parsePO(content: string | Buffer): POFile {
     }
   }
 
-  return {
+  const po: POFile = {
     entries,
+    get headers() {
+      return { ...parsed.headers }
+    },
     setLocale(locale) {
-      const metadata = localeMetadataFor(locale)
+      const metadata = localeMetadataFor(locale, catalogPluralFormsFor(po, locale))
       parsed.headers.Language = metadata.locale
       parsed.headers['Plural-Forms'] = metadata.pluralForms
     },
@@ -241,6 +286,7 @@ export function parsePO(content: string | Buffer): POFile {
       writeFileAtomically(outputPath, output)
     },
   }
+  return po
 }
 
 /** Resolve a language name from a locale code using the native Intl API */

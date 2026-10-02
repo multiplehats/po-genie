@@ -30,9 +30,19 @@ function errorFields(error: unknown): ErrorFields | undefined {
     : undefined
 }
 
+/**
+ * The AI SDK's NoObjectGeneratedError: the model answered, but not in the
+ * requested schema. Model output varies between calls, so a fresh attempt
+ * usually succeeds. Matched by name so callers need no runtime SDK import.
+ */
+export function isNoObjectGeneratedError(error: unknown): boolean {
+  return (errorFields(error) as { name?: unknown } | undefined)?.name === 'AI_NoObjectGeneratedError'
+}
+
 function isTransientProviderError(error: unknown): boolean {
   const fields = errorFields(error)
   if (!fields) return false
+  if (isNoObjectGeneratedError(error)) return true
   if (fields.isRetryable === false) return false
   if (fields.isRetryable === true) return true
 

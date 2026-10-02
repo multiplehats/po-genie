@@ -92,4 +92,23 @@ describe('retryTransientProviderCall', () => {
     expect(result).toBe('translated')
     expect(attempts).toBe(2)
   })
+
+  it('retries a schema-mismatched model response', async () => {
+    let attempts = 0
+    const result = await retryTransientProviderCall(
+      async () => {
+        attempts++
+        if (attempts === 1) {
+          throw Object.assign(new Error('No object generated: response did not match schema.'), {
+            name: 'AI_NoObjectGeneratedError',
+          })
+        }
+        return 'translated'
+      },
+      async () => {},
+    )
+
+    expect(result).toBe('translated')
+    expect(attempts).toBe(2)
+  })
 })
