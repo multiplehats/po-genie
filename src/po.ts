@@ -10,6 +10,12 @@ export interface POEntry {
   msgstr: string
   /** Authoritative gettext translation forms, indexed by plural slot. */
   msgstrs: string[]
+  /**
+   * Whether gettext marked the translation as needing review, for example
+   * after the source text changed. Clearing it also drops the previous-source
+   * (`#|`) comments, which only describe a fuzzy match.
+   */
+  fuzzy: boolean
   /** Reference back to the parsed item for mutation */
   _item: gettextParser.GetTextTranslation
 }
@@ -239,6 +245,13 @@ export function loadPO(filePath: string): POFile {
   return parsePO(readFileSync(filePath))
 }
 
+function entryFlags(item: gettextParser.GetTextTranslation): string[] {
+  return (item.comments?.flag ?? '')
+    .split(',')
+    .map((flag) => flag.trim())
+    .filter((flag) => flag.length > 0)
+}
+
 /** Parse a PO/POT model from already captured source content. */
 export function parsePO(content: string | Buffer): POFile {
   const parsed = gettextParser.po.parse(content)
@@ -265,6 +278,20 @@ export function parsePO(content: string | Buffer): POFile {
         },
         set msgstrs(value) {
           item.msgstr = value
+        },
+        get fuzzy() {
+          return entryFlags(item).includes('fuzzy')
+        },
+        set fuzzy(value) {
+          const flags = entryFlags(item).filter((flag) => flag !== 'fuzzy')
+          if (value) flags.unshift('fuzzy')
+          const comments = item.comments ?? (item.comments = {} as NonNullable<typeof item.comments>)
+          if (flags.length > 0) {
+            comments.flag = flags.join(', ')
+          } else {
+            delete comments.flag
+          }
+          if (!value) delete comments.previous
         },
         _item: item,
       })
