@@ -110,6 +110,23 @@ msgid "Cancel"
 msgstr ""
 `.trim()
 
+const FUZZY_PO = `
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\\n"
+
+msgid "Save settings"
+msgstr "Instellingen opslaan"
+
+#, fuzzy, php-format
+#| msgid "Saved %s item"
+msgid "Saved %s items"
+msgstr "Verouderd %s artikel"
+
+msgid "Cancel"
+msgstr ""
+`.trim()
+
 const CONTEXTUAL_PO = `
 msgid ""
 msgstr ""
@@ -781,6 +798,49 @@ msgstr ""
     // Pre-existing translation must be preserved
     const saved = readFileSync(result.output, 'utf-8')
     expect(saved).toContain('msgstr "Instellingen opslaan"')
+  })
+
+  it('retranslates fuzzy entries and clears their flag, without resending good translations', async () => {
+    const input = join(tmpDir, 'fuzzy.po')
+    writeFileSync(input, FUZZY_PO)
+    mockAI([['[VAR_0] artikelen opgeslagen', 'Annuleren']])
+
+    const result = await translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })
+
+    expect(result.translated).toBe(2)
+    expect(result.skipped).toBe(1)
+    expect(generateObject).toHaveBeenCalledTimes(1)
+    const request = JSON.stringify(vi.mocked(generateObject).mock.calls[0][0])
+    expect(request).toContain('Saved')
+    expect(request).toContain('Cancel')
+    expect(request).not.toContain('Save settings')
+
+    const saved = gettextParser.po.parse(readFileSync(result.output))
+    const fuzzy = saved.translations['']['Saved %s items']
+    expect(fuzzy.msgstr).toEqual(['%s artikelen opgeslagen'])
+    expect(fuzzy.comments?.flag).toBe('php-format')
+    expect(fuzzy.comments?.previous).toBeUndefined()
+    expect(saved.translations['']['Save settings'].msgstr).toEqual(['Instellingen opslaan'])
+    expect(readFileSync(result.output, 'utf-8')).not.toContain('Verouderd')
+  })
+
+  it('keeps the fuzzy flag when the run fails before saving', async () => {
+    const input = join(tmpDir, 'fuzzy.po')
+    writeFileSync(input, FUZZY_PO)
+    mockAI([['only one']])
+
+    await expect(translateFile({
+      input,
+      locale: 'nl_NL',
+      apiKey: 'test-key',
+    })).rejects.toThrow()
+
+    const unchanged = gettextParser.po.parse(readFileSync(input))
+    expect(unchanged.translations['']['Saved %s items'].comments?.flag).toBe('fuzzy, php-format')
   })
 
   it('re-translates everything when onlyMissing is false', async () => {

@@ -15,8 +15,7 @@ import {
   loadPO,
   localeMetadataFor,
   localeToLanguageName,
-  UnsupportedPluralRulesError,
-} from '../src/po.js'
+  UnsupportedPluralRulesError, parsePO } from '../src/po.js'
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -153,6 +152,34 @@ describe('loadPO', () => {
       'Bestand vervangen',
       'Bestanden vervangen',
     ])
+  })
+
+  it('reads and clears the fuzzy flag while keeping other flags', () => {
+    const po = parsePO([
+      'msgid ""',
+      'msgstr ""',
+      '"Content-Type: text/plain; charset=UTF-8\\n"',
+      '',
+      '#, fuzzy, php-format',
+      '#| msgid "Old %s"',
+      'msgid "New %s"',
+      'msgstr "Oud %s"',
+      '',
+      'msgid "Plain"',
+      'msgstr "Gewoon"',
+    ].join('\n'))
+    const [fuzzy, plain] = po.entries
+
+    expect(fuzzy.fuzzy).toBe(true)
+    expect(plain.fuzzy).toBe(false)
+
+    fuzzy.fuzzy = false
+    expect(fuzzy.fuzzy).toBe(false)
+    expect(fuzzy._item.comments?.flag).toBe('php-format')
+    expect(fuzzy._item.comments?.previous).toBeUndefined()
+
+    plain.fuzzy = false
+    expect(plain._item.comments?.flag).toBeUndefined()
   })
 
   it('saves mutations back to file via _item reference', () => {

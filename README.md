@@ -86,7 +86,7 @@ po-genie [OPTIONS]
   -c, --context     Project context sent to the AI for better quality
   --batch-size      Strings per AI request (default: 40)
   --concurrency     Maximum locale translations run at once (default: 2)
-  --all-strings     Re-translate all gettext strings, not just missing ones
+  --all-strings     Re-translate all gettext strings, not just missing or fuzzy ones
 ```
 
 Batch size and concurrency values must be positive integers.
@@ -100,6 +100,12 @@ Batch size and concurrency values must be positive integers.
 | `readme.txt` | `nl_NL` | `readme-nl_NL.txt` (same dir) |
 | any supported file | one locale | exact file from `--output` |
 | any supported file | multiple locales | one locale-suffixed file in the existing `--output` directory |
+
+By default only entries that need work are sent to the model: empty
+translations and entries flagged `fuzzy` (whose source text changed since they
+were translated). Up-to-date translations are skipped, so re-running after a
+`msgmerge` only pays for what changed. A successful run clears the `fuzzy` flag
+and the `#|` previous-source comments.
 
 Without `--output`, multi-locale files are written beside the input. Results
 keep the requested locale order even when locale jobs finish out of order.

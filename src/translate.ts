@@ -149,14 +149,37 @@ function estimateCost(modelId: string, promptTokens: number, completionTokens: n
  * (`{"translations": "[\"a\",\"b\"]"}`). Accept that shape instead of
  * failing the whole batch; anything else still fails validation.
  */
-function parseStringifiedArray(value: unknown): unknown {
+export function parseStringifiedArray(value: unknown): unknown {
   if (typeof value !== 'string') return value
   try {
     const parsed: unknown = JSON.parse(value)
     return Array.isArray(parsed) ? parsed : value
   } catch {
-    return value
+    return repairStringifiedStringArray(value) ?? value
   }
+}
+
+/**
+ * Recover a JSON-encoded string array whose items contain unescaped double
+ * quotes, as models produce when they add typographic quotes such as German
+ * „…" inside a translation. Items are split only on the `","` delimiter, so
+ * every other quote is treated as text. The caller still checks the item
+ * count and every protected token, so a wrong split fails the batch as before.
+ */
+function repairStringifiedStringArray(value: string): string[] | undefined {
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('["') || !trimmed.endsWith('"]')) return undefined
+  const items: string[] = []
+  for (const part of trimmed.slice(2, -2).split(/"\s*,\s*"/)) {
+    try {
+      const item: unknown = JSON.parse(`"${part.replace(/(?<!\\)"/g, '\\"')}"`)
+      if (typeof item !== 'string') return undefined
+      items.push(item)
+    } catch {
+      return undefined
+    }
+  }
+  return items
 }
 
 const translationsSchema = z.object({
@@ -225,6 +248,11 @@ function knownUsage(
     totalTokens: promptTokens + completionTokens,
     ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
   }
+}
+
+/** Every selected entry now holds a fresh translation for every form. */
+function clearFuzzy(entries: Iterable<POEntry>): void {
+  for (const entry of entries) entry.fuzzy = false
 }
 
 function normalizePluralEntries(entries: POEntry[], pluralFormCount: number): void {
@@ -636,7 +664,8 @@ async function translateFileFromSource(
     const formCount = pluralExtracted ? pluralFormCount : 1
 
     for (let formIndex = 0; formIndex < formCount; formIndex++) {
-      if (onlyMissing && entry.msgstrs[formIndex]) continue
+      // A fuzzy translation belongs to older source text, so it still needs work.
+      if (onlyMissing && entry.msgstrs[formIndex] && !entry.fuzzy) continue
 
       const extracted = formIndex === 0 ? singularExtracted : pluralExtracted!
       const requestItem: TranslationRequestItem = {
@@ -743,6 +772,7 @@ async function translateFileFromSource(
     .filter((index): index is number => index !== undefined)
 
   if (pendingIndices.length === 0) {
+    clearFuzzy(selectedEntries)
     normalizePluralEntries(po.entries, pluralFormCount)
     po.save(outputPath)
     removeCheckpoint(outputPath)
@@ -840,6 +870,7 @@ async function translateFileFromSource(
     })
   }
 
+  clearFuzzy(selectedEntries)
   normalizePluralEntries(po.entries, pluralFormCount)
   po.save(outputPath)
   removeCheckpoint(outputPath)
